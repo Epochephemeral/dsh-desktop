@@ -23,18 +23,6 @@ function getComputerUseCache(context: Context): ComputerUseCacheEntry {
   return entry
 }
 
-export function warmComputerUseCache(context: Context): void {
-  const listPlugins = context.remote?.pluginManager?.listPlugins
-  if (typeof listPlugins !== 'function') return
-  const cache = getComputerUseCache(context)
-  void listPlugins().then(result => {
-    if (!result.ok) return
-    const rows = result.value.filter(item => item.moduleName === PROVIDER)
-    cache.row = rows.length === 1 ? rows[0] : undefined
-    cache.loaded = true
-  }).catch(() => {})
-}
-
 export function ComputerUseSettings({ context, zh, mode = 'overview' }: { context: Context; zh: boolean; mode?: 'overview' | 'actions' | 'page' }) {
   const t = (chinese: string, english: string): string => zh ? chinese : english
   const cache = getComputerUseCache(context)

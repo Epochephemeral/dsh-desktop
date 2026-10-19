@@ -246,7 +246,7 @@ it('lets composite item details reuse the official component list, live state an
   expect(updatedSlot.props.owner.renderComponents(['@deepseek-ai/dsh-schedule']).props.rows[0].enabled).toBe(false)
 })
 
-it('seeds PluginControls, RemoteControlSettings, and ComputerUseSettings from the official snapshot and warmed cache without disabling switches on remount', async () => {
+it('seeds PluginControls, RemoteControlSettings, and ComputerUseSettings from the official snapshot and first-mount cache without disabling switches on remount', async () => {
   vi.stubGlobal('window', { addEventListener: vi.fn(), removeEventListener: vi.fn() })
   const packages = [
     { name: 'dsh-community-market', enabled: true },
@@ -292,10 +292,27 @@ it('seeds PluginControls, RemoteControlSettings, and ComputerUseSettings from th
     },
   }
   registerPluginControls(ctx as Context)
+  // Registration must not reach the Host: both listings block its event loop
+  // and would delay the first window's account and onboarding state.
+  await Promise.resolve()
+  expect(listBundles).not.toHaveBeenCalled()
+  expect(listPlugins).not.toHaveBeenCalled()
+
+  // The first mount loads the listings and fills the per-context cache.
+  const props = {
+    context: ctx,
+    t: (key: string) => key === 'language' ? 'zh' : key,
+    onOpenBundle: vi.fn(),
+    onOpenItem: vi.fn(),
+  }
+  render(component(OverviewView!(props), 'ComputerUseSettings')!)
+  for (const effect of hooks.effects.splice(0)) effect()
   await vi.waitFor(() => {
     expect(listBundles).toHaveBeenCalledTimes(1)
     expect(listPlugins).toHaveBeenCalledTimes(1)
   })
+  await Promise.all([listBundles.mock.results[0]!.value, listPlugins.mock.results[0]!.value])
+  await new Promise(resolve => setTimeout(resolve, 0))
 
   // Simulate remounting the Installed Plugins page while background refresh RPCs are still in flight
   listBundles.mockReturnValue(new Promise(() => {}))
@@ -304,12 +321,7 @@ it('seeds PluginControls, RemoteControlSettings, and ComputerUseSettings from th
   hooks.cursor = 0
   hooks.effects = []
 
-  const tree = OverviewView!({
-    context: ctx,
-    t: (key: string) => key === 'language' ? 'zh' : key,
-    onOpenBundle: vi.fn(),
-    onOpenItem: vi.fn(),
-  })
+  const tree = OverviewView!(props)
   const marketSwitch = nodes(tree).find(node => node.type === 'input' && node.props.label === '启用插件市场')!
   expect(marketSwitch.props.checked).toBe(true)
   expect(marketSwitch.props.disabled).toBe(false)

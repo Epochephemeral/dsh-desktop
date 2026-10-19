@@ -11,7 +11,7 @@ import {
 import { readMarketState } from '../../../dsh-community-market/src/client/api.ts'
 import { Choice, MARKET_OPTIONS, marketBody, marketTitle } from './DesktopSettingsSection.tsx'
 import { en as desktopEn, zh as desktopZh, type DesktopSettingsLocaleKey } from '../../../dsh-plugin-desktop-beta/src/client/desktop-settings-locales.ts'
-import { ComputerUseSettings, warmComputerUseCache } from './computer-use.tsx'
+import { ComputerUseSettings } from './computer-use.tsx'
 import {
   BUILT_IN_MARKET_SOURCES, COMMUNITY_MARKET as COMMUNITY, configureSingleMarketToOfficial, DSH_MARKET as MARKET,
   importMarketSourcesToOfficial, marketToggleTargets, OFFICIAL_CONFIGURABLE_MARKET_SOURCES, OFFICIAL_MARKET,
@@ -59,25 +59,12 @@ function getBundlesCache(context: Context): BundlesCacheEntry {
   return entry
 }
 
-function warmBundlesCache(context: Context): void {
-  const listBundles = context.remote?.pluginManager?.listBundles
-  if (typeof listBundles !== 'function') return
-  const cache = getBundlesCache(context)
-  void listBundles().then(result => {
-    if (!result.ok) return
-    cache.bundles = result.value
-    cache.loaded = true
-    const community = result.value.find(row => row.name === COMMUNITY)
-    const market = result.value.find(row => row.name === MARKET)
-    if (market?.enabled && !community?.enabled) cache.preferredMarket = MARKET
-    else if (community?.enabled && !market?.enabled) cache.preferredMarket = COMMUNITY
-  }).catch(() => {})
-}
-
+// The cache fills on the first mount, never at registration. listBundles reads
+// every bundle manifest synchronously on the Host and listPlugins walks the
+// whole inventory; calling them at startup stalls the account, credential, and
+// onboarding RPCs the first window waits on (the official manager loads lazily).
 export function registerPluginControls(ctx: Context): void {
   ctx.inject(['remote', 'remote.pluginManager', 'remote.pluginMarket'], inner => {
-    warmBundlesCache(inner)
-    warmComputerUseCache(inner)
     inner.slots.inject('plugins.overview', () => {
       const dispose = inner.slots.register({ name: 'plugins.overview', id: 'desktop-next', order: 0,
         locale: 'desktop-next', inject: () => ({ context: inner }),
