@@ -650,6 +650,8 @@ export interface PreparedDesktopProfile {
   marketFailure?: string
   /** Whether packaged pnpm must rebuild a legacy Profile dependency layout. */
   requiresDependencyMigration: boolean
+  /** Layers whose Connection override still targets the retired `webRuntime` service. */
+  legacyWebRuntimeSources?: readonly string[]
 }
 
 /** Optional observations emitted before profile preparation can fail. */
@@ -1261,6 +1263,93 @@ function connectionTrustPatch(
   return { id: 'connection', config: { ...config, trustedHosts: merged } }
 }
 
+const RETIRED_WEB_RUNTIME_SERVICE = 'webRuntime'
+const WEB_STARTUP_SERVICE = 'webStartup'
+const RETIRED_WEB_RUNTIME_REFERENCE = /\bctx\s*(?:\?\.|\.)\s*webRuntime\b/gu
+
+/** Service names one row's `inject` declares, in either Cordis form. */
+function injectedServices(inject: EntryOptions['inject']): string[] {
+  if (Array.isArray(inject)) return inject.filter((name): name is string => typeof name === 'string')
+  return inject !== null && typeof inject === 'object' ? Object.keys(inject) : []
+}
+
+/** Whether a config value carries a `!!js` expression that reads `ctx.webRuntime`. */
+function readsRetiredWebRuntime(value: unknown): boolean {
+  if (isJsExpr(value)) return new RegExp(RETIRED_WEB_RUNTIME_REFERENCE.source, 'u').test(value.__jsExpr)
+  if (Array.isArray(value)) return value.some(readsRetiredWebRuntime)
+  if (value !== null && typeof value === 'object') return Object.values(value).some(readsRetiredWebRuntime)
+  return false
+}
+
+/** Whether one patch layer rewrites Connection against the retired service. */
+function patchesTargetRetiredWebRuntime(patches: readonly PatchOptions[]): boolean {
+  return patches.some(patch => patch.id === 'connection' && patch.insert === undefined
+    && (injectedServices(patch.inject).includes(RETIRED_WEB_RUNTIME_SERVICE)
+      || readsRetiredWebRuntime(patch.config)))
+}
+
+/** Replace each `ctx.webRuntime` read with the generation's frozen 0.2.0 values. */
+function substituteRetiredWebRuntime(value: unknown, literal: string): unknown {
+  if (isJsExpr(value)) {
+    return { __jsExpr: value.__jsExpr.replace(RETIRED_WEB_RUNTIME_REFERENCE, literal) }
+  }
+  if (Array.isArray(value)) return value.map(item => substituteRetiredWebRuntime(item, literal))
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) =>
+      [key, substituteRetiredWebRuntime(item, literal)]))
+  }
+  return value
+}
+
+/**
+ * Re-target a Connection row that a pre-0.2.1 layer bound to `webRuntime`.
+ *
+ * dsh 0.2.0 Web bundles provided `webRuntime` ({ lanAddresses, trustedHosts })
+ * and Connection injected it. Third-party bundles written for that core
+ * (issue #1424: e.g. `@tnnevol/dsh-codebuddy@0.2.0-rc.2.6`, `@hr98w/dsh-memory`,
+ * `dsh-local-link`) replace Connection's whole `inject` with `[webRuntime, ...]`
+ * or concatenate `ctx.webRuntime.trustedHosts`. Once the installed Web bundle
+ * no longer declares that service, nothing provides it: the required row stays
+ * pending and every Desktop startup aborts. Only Connection is rewritten,
+ * because it is the required row whose absence takes the whole Host down; the
+ * webRuntime service itself is not resurrected for other plugins.
+ *
+ * `webStartup` replaces the retired injection, and every `ctx.webRuntime` read
+ * becomes the literal values that service carried for this generation: the
+ * frozen LAN snapshot and the Web trust Desktop composes from it.
+ * @param connection - the composed Connection row.
+ * @param values - this generation's equivalent of the retired service.
+ * @returns the replacement row, or undefined when it does not use the service.
+ */
+function retargetRetiredWebRuntimeConnection(
+  connection: EntryOptions | undefined,
+  values: { readonly lanAddresses: readonly string[], readonly trustedHosts: readonly string[] },
+): EntryOptions | undefined {
+  if (connection === undefined) return undefined
+  const inject = connection.inject
+  const injects = injectedServices(inject).includes(RETIRED_WEB_RUNTIME_SERVICE)
+  if (!injects && !readsRetiredWebRuntime(connection.config)) return undefined
+  let retargeted = inject
+  if (injects && Array.isArray(inject)) {
+    retargeted = [...new Set(inject.map(name =>
+      name === RETIRED_WEB_RUNTIME_SERVICE ? WEB_STARTUP_SERVICE : name))]
+  } else if (injects && inject !== null && typeof inject === 'object') {
+    const { [RETIRED_WEB_RUNTIME_SERVICE]: retired, ...rest } = inject as Record<string, unknown>
+    retargeted = { [WEB_STARTUP_SERVICE]: retired, ...rest } as EntryOptions['inject']
+  }
+  const literal = `(${JSON.stringify({
+    lanAddresses: [...values.lanAddresses],
+    trustedHosts: [...values.trustedHosts],
+  })})`
+  return {
+    ...connection,
+    ...(retargeted === undefined ? {} : { inject: retargeted }),
+    ...(connection.config === undefined
+      ? {}
+      : { config: substituteRetiredWebRuntime(connection.config, literal) }),
+  }
+}
+
 /** Resolve a Loader row's platform gate without mutating the host process. */
 function rowDisabledOnPlatform(row: EntryOptions, platform: NodeJS.Platform): boolean {
   if (!isJsExpr(row.disabled)) return row.disabled === true
@@ -1538,12 +1627,15 @@ export function prepareDesktopProfile(
   let aaLayer: Profile['layers'][number] | undefined
   let dshMarketPatches: PatchOptions[] | undefined
   let desktopLayerInserted = false
+  let webAppPatches: readonly PatchOptions[] = []
+  const retiredWebRuntimeLayers: string[] = []
   const providerAwareDisabledBundles = new Set(disabledBundles)
   if (marketSelection.requested === DESKTOP_MARKET_IDENTITIES.dshMarket.provider) {
     providerAwareDisabledBundles.delete(DESKTOP_MARKET_IDENTITIES.dshMarket.packageName)
   }
   if (hooks.aaEnabled === true) providerAwareDisabledBundles.delete(AA_PACKAGE_NAME)
   for (const layer of activeDesktopProfileLayers(profile, providerAwareDisabledBundles)) {
+    if (patchesTargetRetiredWebRuntime(layer.patches)) retiredWebRuntimeLayers.push(layer.packageName)
     if (layer.packageName === AA_PACKAGE_NAME) { aaLayer = layer; continue }
     if (layer.packageName === DESKTOP_MARKET_IDENTITIES.dshMarket.packageName) {
       dshMarketPatches = layer.patches
@@ -1551,6 +1643,7 @@ export function prepareDesktopProfile(
     }
     bundlePatches.push(...layer.patches)
     if (layer.packageName !== '@deepseek-ai/dsh-web-app') continue
+    webAppPatches = layer.patches
     bundlePatches.push(...desktopPatches)
     desktopLayerInserted = true
   }
@@ -1709,8 +1802,29 @@ export function prepareDesktopProfile(
       trustedHosts: desktopTrustedHosts,
     },
   })
-  const connectionPatch = connectionTrustPatch(rows.get('connection'), desktopTrustedHosts)
-  if (connectionPatch !== undefined) patches.push(connectionPatch)
+  // A Web bundle that still injects webRuntime into its own Connection row
+  // also provides that service; only a core that retired it needs re-targeting.
+  const webBundleProvidesWebRuntime = webAppPatches.some(patch => (patch.insert ?? []).some(row =>
+    row.id === 'connection' && injectedServices(row.inject).includes(RETIRED_WEB_RUNTIME_SERVICE)))
+  const retargetedConnection = webBundleProvidesWebRuntime
+    ? undefined
+    : retargetRetiredWebRuntimeConnection(rows.get('connection'), {
+        lanAddresses,
+        trustedHosts: desktopTrustedHosts,
+      })
+  const legacyWebRuntimeSources = retargetedConnection === undefined ? [] : [
+    ...retiredWebRuntimeLayers,
+    ...patchesTargetRetiredWebRuntime(profile.patches) ? [profile.patchPath] : [],
+    ...patchesTargetRetiredWebRuntime(homePatches) ? [join(home, PROFILE_PATCH_FILENAME)] : [],
+  ]
+  const connectionPatch = connectionTrustPatch(retargetedConnection ?? rows.get('connection'), desktopTrustedHosts)
+  if (retargetedConnection !== undefined) {
+    patches.push({
+      id: 'connection',
+      ...(retargetedConnection.inject === undefined ? {} : { inject: retargetedConnection.inject }),
+      config: connectionPatch?.config ?? rowConfig(retargetedConnection),
+    })
+  } else if (connectionPatch !== undefined) patches.push(connectionPatch)
   // The saved mode is what the next generation boots, so the config editor's
   // validation pass must still reject a layout it could not start.
   if (mode === 'advanced' || mode === 'extended') {
@@ -1888,6 +2002,7 @@ export function prepareDesktopProfile(
     market: desktopMarketSnapshotWithEffective(marketSelection, effectiveMarket),
     requiresDependencyMigration,
     ...(marketFailure === undefined ? {} : { marketFailure }),
+    ...(legacyWebRuntimeSources.length === 0 ? {} : { legacyWebRuntimeSources }),
   }
 }
 
