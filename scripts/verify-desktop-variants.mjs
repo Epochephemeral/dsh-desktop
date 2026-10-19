@@ -7,10 +7,9 @@ const betaRoot = join(root, 'dsh-plugin-desktop-beta', 'src')
 // Both editions pin one core API. Stable alone announces and accepts its Next successor.
 const allowedDifferences = new Set([
   'product-identity.ts',
-  // Temporary Stable-only transition: notice, checkbox dialog, update validation and copy.
+  // Temporary Stable-only transition: notice, update validation and copy. The
+  // shared Desktop dialog stays identical; the notice uses buttons, not a checkbox.
   'next-transition-notice.ts',
-  'desktop-dialog-window.ts',
-  'native-ui/desktop-dialog/App.tsx',
   'electron-runtime.ts',
   'native-dialog-copy.ts',
   'update-checker.ts',
