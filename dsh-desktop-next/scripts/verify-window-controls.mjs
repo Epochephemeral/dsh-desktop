@@ -634,18 +634,32 @@ try {
   await reopen.waitFor({ state: 'visible' })
   await page.screenshot({ path: join(screenshots, 'blank-session-collapsed.png'), animations: 'disabled' })
   await expand()
+  // The official layout measures its frame through ResizeObserver + rAF and animates sidebar
+  // toggles, so assert only once the grid reflects both the requested width and sidebar state.
+  const settleLayout = (width, collapsed) => page.waitForFunction(({ width, collapsed }) => {
+    const frame = document.querySelector('[data-shell-overlay]').parentElement
+    if (frame.hasAttribute('data-animating') || frame.hasAttribute('data-sidebar-collapsed') !== collapsed) return false
+    const columns = getComputedStyle(frame).gridTemplateColumns.split(' ').map(Number.parseFloat)
+    return (columns[0] === 0) === collapsed && Math.abs(columns.reduce((sum, column) => sum + column, 0) - width) < 1
+  }, { width, collapsed })
   for (const width of [800, 1800, 1280]) {
     await page.setViewportSize({ width, height: 840 })
-    if (width < 1024) {
-      await reopen.waitFor({ state: 'visible' })
-      await checkDrag()
-      await expand()
-    }
+    // Below 1024px ui-layout auto-collapses the sidebar and its toggle re-expands it beside the
+    // squeezed center; wider windows keep the expanded sidebar from the previous step.
+    const narrow = width < 1024
+    await settleLayout(width, narrow)
     await checkDrag()
+    if (narrow) {
+      await expand()
+      await settleLayout(width, false)
+      await checkDrag()
+    }
     await collapse.click()
     await reopen.waitFor({ state: 'visible' })
+    await settleLayout(width, true)
     await checkDrag()
     await expand()
+    await settleLayout(width, false)
   }
   await verifySidebarBrowser(page, nativeBrowser, screenshots)
 

@@ -151,6 +151,7 @@ it('rejects library files requiring an unsupported installation scheme', async (
   }
 })
 
+// Two full directory replacements: I/O-starved CI workers have exceeded the 5 s default.
 it('copies complete Office resources outside the application archive and removes obsolete assets', async () => {
   const root = await mkdtemp(join(tmpdir(), 'desktop-office-assets-'))
   try {
@@ -169,7 +170,7 @@ it('copies complete Office resources outside the application archive and removes
     }
     await expect(readFile(join(destination, 'obsolete.py'))).rejects.toMatchObject({ code: 'ENOENT' })
   } finally { await rm(root, { recursive: true, force: true }) }
-}, 15_000)
+}, 20_000)
 
 // Native Windows payloads require python.exe rather than POSIX interpreter aliases.
 it.skipIf(process.platform === 'win32')('rejects expanded interpreter aliases in the native payload smoke', async () => {
