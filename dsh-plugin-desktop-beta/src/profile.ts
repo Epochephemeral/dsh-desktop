@@ -36,6 +36,7 @@ import { isMap, isPair, isScalar, isSeq, parseAllDocuments, parseDocument, type 
 import { findOverlayPackage, resolveOverlayPackage } from './package-overlay.ts'
 import { removeLinkProjectionsSafely } from './link-projections.ts'
 import { DESKTOP_DEFAULT_WEB_PORT } from './desktop-port.ts'
+import { RETIRED_SCHEDULE_BUNDLE, retiredSchedulePatch, SCHEDULE_RETIREMENT_MARKER } from './profile-schedule.ts'
 import {
   desktopBrowserAccessAvailable,
   desktopBrowserAccessEnabled,
@@ -1038,6 +1039,53 @@ function marketFailureMessage(cause: unknown): string {
 }
 
 /**
+ * Drop the retired Scheduled Tasks bundle before Desktop resolves the bundle
+ * list: a Profile 0.2.0-rc.2 wrote still names it, the installation no longer
+ * ships it, and app-boot only prunes it after Desktop has already failed to
+ * resolve it. The `time-context` overrides that no longer match a row are
+ * removed once per Profile. Health snapshots can restore an older manifest, so
+ * the bundle check runs on every load. A failed write still lets this launch
+ * continue with the pruned list.
+ */
+function retireScheduleBundle(profileDir: string, manifest: ProfileManifest): ProfileManifest {
+  const dsh = (manifest.dsh ?? {}) as Record<string, unknown>
+  const profileSection = (dsh.profile ?? {}) as Record<string, unknown>
+  const bundles = Array.isArray(profileSection.bundles) ? profileSection.bundles as unknown[] : undefined
+  const listsRetired = bundles?.includes(RETIRED_SCHEDULE_BUNDLE) === true
+  if (!listsRetired && dsh[SCHEDULE_RETIREMENT_MARKER] === true) return manifest
+  const patchPath = join(profileDir, PROFILE_PATCH_FILENAME)
+  let patch: string | undefined
+  let patchReviewed = false
+  try {
+    if (!lstatSync(patchPath, { throwIfNoEntry: false })?.isSymbolicLink()) {
+      patch = retiredSchedulePatch(existsSync(patchPath) ? readFileSync(patchPath, 'utf8') : '[]\n')
+      patchReviewed = true
+    }
+  } catch {
+    // A malformed patch is left for recovery to report; retry on the next start.
+  }
+  const next = {
+    ...manifest,
+    dsh: {
+      ...dsh,
+      profile: {
+        ...profileSection,
+        ...(bundles === undefined ? {} : { bundles: bundles.filter(bundle => bundle !== RETIRED_SCHEDULE_BUNDLE) }),
+      },
+      ...(patchReviewed ? { [SCHEDULE_RETIREMENT_MARKER]: true } : {}),
+    },
+  } as ProfileManifest
+  try {
+    // Patch first: both steps are idempotent, so an interrupted run simply repeats.
+    if (patch !== undefined) replaceDocument(patchPath, patch)
+    writeProfileManifest(profileDir, next)
+  } catch {
+    // Read-only or contended Profile: this launch still skips the missing package.
+  }
+  return next
+}
+
+/**
  * Load a profile while resolving disabled third-party bundles only after they have been filtered.
  * Every direct bundle uses the same Desktop/Profile SemVer overlay that Loader imports use.
  * The `dshmarket` bundle is filtered before resolution unless explicitly selected.
@@ -1056,7 +1104,7 @@ function loadRecoveryFilteredProfile(
     }
     initProfile(profileDir, template.bundles)
   }
-  const manifest = readProfileManifest(BIN_NAME, profileDir)
+  const manifest = retireScheduleBundle(profileDir, readProfileManifest(BIN_NAME, profileDir))
   const rawBundles = (manifest.dsh?.profile as { bundles?: unknown } | undefined)?.bundles
   if (rawBundles !== undefined
     && (!Array.isArray(rawBundles) || rawBundles.some(value => typeof value !== 'string'))) {
