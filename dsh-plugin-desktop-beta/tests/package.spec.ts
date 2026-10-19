@@ -1214,16 +1214,18 @@ describe('published package surface', () => {
 
   it('keeps Electron out of production dependencies consumed by electron-builder', () => {
     expect(manifest.dependencies).not.toHaveProperty('electron')
-    // Beta is pinned to 44.0.0, not to the newest 44.x. `node-addon-require-builtin`
-    // 0.1.6 — which alpha.2's dsh-app-boot requires for `internalModules()` — gates on an
-    // exact V8 build string compiled into its prebuilt binary, and only ships
-    // 15.0.245.13-electron.0 (Electron 43.0.0/43.1.0), 15.2.124.13-electron.0 (44.0.0) and
+    // Beta is pinned to exactly 44.7.0 (the release upstream's rc.2 desktop ships), not to
+    // the newest 44.x. Electron 44.0.0's asar reader is ~2.4x slower and pushes host boot
+    // past its 60 s timeout (#1420). `node-addon-require-builtin` 0.1.9 — which dsh-app-boot
+    // requires for `internalModules()` — gates on an exact V8 build string compiled into its
+    // prebuilt binaries, and only ships 15.0.245.13-electron.0 (Electron 43.0.0/43.1.0),
+    // 15.2.124.13-electron.0 (44.0.0), 15.2.124.28-electron.0 (44.4.2-44.7.0) and
     // 15.4.80-electron.0 (45.0.0-alpha.6). Every other 43.x/44.x patch release, including
-    // 43.3.0 and 44.4.1, fails closed with "unsupported Electron runtime fingerprint" and
-    // takes every `dsh` CLI entry point down with it. Do not float this to ^44 or bump it
-    // to a newer 44.x until the addon publishes a matching fingerprint.
-    expect(manifest.peerDependencies?.electron).toBe('44.0.0')
-    expect(manifest.devDependencies?.electron).toBe('44.0.0')
+    // 43.3.0, 44.4.1 and 44.7.1+, fails closed with "unsupported Electron runtime
+    // fingerprint" and takes every `dsh` CLI entry point down with it. Do not float this to
+    // ^44 or bump it to a newer 44.x until the addon publishes a matching fingerprint.
+    expect(manifest.peerDependencies?.electron).toBe('44.7.0')
+    expect(manifest.devDependencies?.electron).toBe('44.7.0')
     expect(manifest.dependencies?.pnpm).toBe('11.8.0')
   })
 
