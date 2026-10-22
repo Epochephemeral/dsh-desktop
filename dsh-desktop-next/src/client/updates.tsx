@@ -8,7 +8,7 @@ export function NextUpdateSettings({ state, language, run }: { state: DesktopSta
   const t = (zh: string, en: string) => language.startsWith('zh') ? zh : en
   const action = update ? updateAction(update) : undefined
   return <section className="dshDesktopSettingsGroup" data-next-updates>
-    <h3>{t('应用更新', 'App updates')}</h3>
+    <h3>{state.platform === 'linux' ? t('桌面版本', 'Desktop version') : t('应用更新', 'App updates')}</h3>
     <p className="dshDesktopSettingsHint">DSH NEXT · {state.version}</p>
     {update && <>
       <p role={update.phase === 'error' ? 'alert' : 'status'}>{updateLabel(update, language)}</p>

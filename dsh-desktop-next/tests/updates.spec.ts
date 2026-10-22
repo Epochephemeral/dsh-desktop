@@ -148,13 +148,15 @@ it('renders only the version on Linux while showing update status and controls o
     updates: { phase: 'idle', installable: false },
   }
   const linuxHtml = renderToStaticMarkup(createElement(NextUpdateSettings, { state: baseState, language: 'zh-CN', run: vi.fn() }))
-  expect(linuxHtml).toContain('应用更新')
+  expect(linuxHtml).toContain('桌面版本')
+  expect(linuxHtml).not.toContain('应用更新')
   expect(linuxHtml).toContain('DSH NEXT · 2.0.19-next')
   expect(linuxHtml).not.toContain('检查更新')
   expect(linuxHtml).not.toContain('应用内安装更新需要使用 macOS 或 Windows 安装版。')
   expect(linuxHtml).not.toContain('<button')
 
   const macHtml = renderToStaticMarkup(createElement(NextUpdateSettings, { state: { ...baseState, platform: 'darwin' }, language: 'zh-CN', run: vi.fn() }))
+  expect(macHtml).toContain('应用更新')
   expect(macHtml).toContain('DSH NEXT · 2.0.19-next')
   expect(macHtml).toContain('检查更新')
   expect(macHtml).toContain('应用内安装更新需要使用 macOS 或 Windows 安装版。')
