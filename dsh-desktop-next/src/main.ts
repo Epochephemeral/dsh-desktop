@@ -1127,8 +1127,7 @@ app.on('before-quit', event => {
   const timeout = setTimeout(() => {
     if (finish()) {
       runtime.diagnostics.record({ source: 'electron', event: 'shutdown.timeout', level: 'error', message: 'Shutdown exceeded five seconds', fields: { pending: JSON.stringify(runtime.diagnostics.pendingOperations()) } })
-      runtime.diagnostics.end(false)
-      app.exit(1)
+      void completeShutdown(false)
     }
   }, DESKTOP_SHUTDOWN_TIMEOUT_MS)
   timeout.unref()
@@ -1137,6 +1136,26 @@ app.on('before-quit', event => {
     finished = true
     clearTimeout(timeout)
     return true
+  }
+  async function completeShutdown(clean: boolean): Promise<void> {
+    if (installingUpdate) {
+      const installerDone = runtime.diagnostics.operation('electron', 'installer.launch')
+      try { await updateInstaller.launch(); installerDone() }
+      catch (error) {
+        installerDone(error)
+        runtime.diagnostics.record({ source: 'electron', event: 'installer.failed', level: 'error', error })
+        runtime.diagnostics.end(clean)
+        dialog.showErrorBox(t('更新未能安装', 'Update could not be installed'), t('应用将重新打开，请在设置中重试更新。', 'The application will reopen. Retry the update in Settings.'))
+        relaunchApp(app, relaunchArguments(process.argv.slice(1), false, false))
+        if (clean) app.quit()
+        else app.exit(1)
+        return
+      }
+    }
+    runtime.diagnostics.end(clean)
+    if (!clean) { app.exit(1); return }
+    if (relaunch) relaunchApp(app, relaunch)
+    app.quit()
   }
   // Keep disconnection/reconnection chrome out of the quit/relaunch transition.
   for (const window of [mainWindow, shellWindow]) {
@@ -1147,7 +1166,7 @@ app.on('before-quit', event => {
   const updatesDone = runtime.diagnostics.operation('electron', 'updates.dispose')
   const recoveryDone = runtime.diagnostics.operation('electron', 'recovery.dispose')
   void Promise.all([updates.dispose(installingUpdate).then(() => updatesDone(), error => { updatesDone(error); throw error }), (async () => { try { await recoveryRunner?.dispose(); recoveryDone() } catch (error) { recoveryDone(error); throw error }; await runtime.close() })()]).then(async () => {
-    if (finished) return
+    if (!finish()) return
     // A staged installer must survive until handoff; the next boot removes it.
     if (safeModeRequested && !installingUpdate) {
       // Windows may still hold Chromium files until process exit; a normal boot
@@ -1155,25 +1174,8 @@ app.on('before-quit', event => {
       try { cleanupDisposableTree(safeElectronData) }
       catch (error) { runtime.diagnostics.append(`Safe Mode desktop state cleanup failed: ${String(error)}`, 'warn'); runtime.diagnostics.flush() }
     }
-    if (installingUpdate) {
-      const installerDone = runtime.diagnostics.operation('electron', 'installer.launch')
-      try { await updateInstaller.launch(); installerDone() }
-      catch (error) {
-        installerDone(error)
-        if (!finish()) return
-        runtime.diagnostics.record({ source: 'electron', event: 'installer.failed', level: 'error', error })
-        runtime.diagnostics.end(true)
-        dialog.showErrorBox(t('更新未能安装', 'Update could not be installed'), t('应用将重新打开，请在设置中重试更新。', 'The application will reopen. Retry the update in Settings.'))
-        relaunchApp(app, relaunchArguments(process.argv.slice(1), false, false))
-        app.quit()
-        return
-      }
-    }
-    if (!finish()) return
-    runtime.diagnostics.end(true)
-    if (relaunch) relaunchApp(app, relaunch)
-    app.quit()
-  }).catch(error => { if (finish()) { runtime.diagnostics.record({ source: 'electron', event: 'shutdown.failed', level: 'error', error }); runtime.diagnostics.end(false); app.exit(1) } })
+    await completeShutdown(true)
+  }).catch(error => { if (finish()) { runtime.diagnostics.record({ source: 'electron', event: 'shutdown.failed', level: 'error', error }); void completeShutdown(false) } })
 })
 if (ownsInstance) {
   process.on('uncaughtExceptionMonitor', (error, origin) => {

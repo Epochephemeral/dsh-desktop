@@ -439,6 +439,59 @@ it.each(['normal', '--next-safe-mode'])('stages an explicit update before hiding
   }
 })
 
+it.each(['timeout', 'failure'] as const)('still launches a staged update before forced exit when shutdown hits %s', async outcome => {
+  const home = mkdtempSync(join(tmpdir(), 'next-install-update-forced-'))
+  vi.stubEnv('DSH_DESKTOP_NEXT_HOME', home)
+  const stagedPath = () => join(fixture.appPaths.get('userData')!, 'staged-update')
+  const stage = vi.fn(async () => { writeFileSync(stagedPath(), 'installer') })
+  const launch = vi.fn(async () => { expect(readFileSync(stagedPath(), 'utf8')).toBe('installer') })
+  vi.doMock('../src/update-installer.ts', () => ({ NextUpdateInstaller: class { stage = stage; launch = launch } }))
+  vi.doMock('../src/updates.ts', () => ({ NextUpdates: class {
+    constructor(private options: { install(): Promise<void> }) {}
+    snapshot() { return { phase: 'ready', version: '2.0.19-next.1', installable: true } }
+    start() {}
+    dispose = async () => {}
+    install = () => this.options.install()
+  } }))
+  let finishClose!: () => void
+  if (outcome === 'timeout') {
+    fixture.close.mockImplementationOnce(() => new Promise<void>(resolve => { finishClose = resolve }))
+  } else {
+    fixture.close.mockRejectedValueOnce(new Error('Host did not exit'))
+  }
+  try {
+    await import('../src/main.ts')
+    await vi.waitFor(() => expect(fixture.windows).toHaveLength(1))
+    const { app } = await import('electron')
+    const window = fixture.windows[0]
+    const sender = { sender: window.webContents, senderFrame: window.webContents.mainFrame }
+    if (outcome === 'timeout') vi.useFakeTimers()
+    await fixture.handlers.get('dsh-next:command')!(sender, { type: 'install-update' })
+    expect(stage).toHaveBeenCalledOnce()
+    if (outcome === 'timeout') {
+      await vi.advanceTimersByTimeAsync(4_999)
+      expect(launch).not.toHaveBeenCalled()
+      expect(app.exit).not.toHaveBeenCalled()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(launch).toHaveBeenCalledOnce()
+      expect(app.exit).toHaveBeenCalledExactlyOnceWith(1)
+      expect(fixture.diagnosticAppend).toHaveBeenCalledWith(expect.objectContaining({ source: 'electron', event: 'shutdown.timeout', level: 'error' }))
+      finishClose()
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(launch).toHaveBeenCalledOnce()
+      expect(app.exit).toHaveBeenCalledOnce()
+    } else {
+      await vi.waitFor(() => expect(app.exit).toHaveBeenCalledExactlyOnceWith(1))
+      expect(launch).toHaveBeenCalledOnce()
+      expect(fixture.diagnosticAppend).toHaveBeenCalledWith(expect.objectContaining({ source: 'electron', event: 'shutdown.failed', level: 'error' }))
+    }
+  } finally {
+    vi.useRealTimers()
+    vi.doUnmock('../src/update-installer.ts'); vi.doUnmock('../src/updates.ts')
+    vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true })
+  }
+})
+
 it('retains the Host when hiding to tray, restores the window, keeps failed-Host controls, validates IPC, and stops on explicit quit', async () => {
   const home = mkdtempSync(join(tmpdir(), 'next-main-native-'))
   vi.stubEnv('DSH_DESKTOP_NEXT_HOME', home)
