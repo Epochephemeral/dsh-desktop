@@ -211,7 +211,8 @@ function state(): DesktopState {
     recovery = { bundles: [], checkpoints: [], profileDirectory: join(home, 'profiles', runtime.selected),
       usingDefaultDirectory: home === defaultHome, error: String(error), diagnosticsFile, notice: recoveryNotice }
   }
-  return { ...runtime.state(), recovery, onboarding, ...(onboarding ? { onboardingComputerUse } : {}), platform: process.platform, version, updates: updates.snapshot(),
+  return { ...runtime.state(), recovery, onboarding, ...(onboarding ? { onboardingComputerUse } : {}), platform: process.platform, version,
+    ...(['darwin', 'win32'].includes(process.platform) ? { updates: updates.snapshot() } : {}),
     trayAvailable: native.available, notificationsAvailable: Notification.isSupported() }
 }
 function run(value: DesktopCommand): void { void command(value, 'native').catch(error => runtime.report(error)) }
@@ -538,7 +539,7 @@ async function performCommand(input: Record<string, unknown>, type: string, sour
   if (type === 'close-controls') { shellWindow?.close(); return }
   if (type === 'quit') { app.quit(); return }
   if (['check-updates', 'download-update', 'install-update'].includes(type)) {
-    if (quitting || runtime.busy) return
+    if (!['darwin', 'win32'].includes(process.platform) || quitting || runtime.busy) return
     if (type === 'check-updates') {
       void updates.check().then(async () => {
         if (source !== 'native' || quitting) return
