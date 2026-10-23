@@ -12,14 +12,14 @@ import { installSidebarFooterStyles, setSidebarFooterBalanced, setSidebarFooterC
 import { NextSettingsAdapter } from './settings-adapter.ts'
 import { NextDesktopSettings, NextDesktopActions } from './settings.tsx'
 import { installWindowStyles } from './styles.ts'
-import { registerDesktopOnboarding } from '../../../dsh-plugin-desktop-beta/src/client/onboarding.tsx'
-import '../../../dsh-plugin-desktop-beta/src/client/onboarding.css'
+import { registerDesktopOnboarding } from '../../../dsh-plugin-desktop/src/client/onboarding.tsx'
+import '../../../dsh-plugin-desktop/src/client/onboarding.css'
 import { registerPluginControls } from './plugin-controls.tsx'
 import { installPluginControlsStyles } from './plugin-controls-styles.ts'
 import { registerComputerUseCommandUi } from './computer-use-command-ui.tsx'
 import { desktopDirectoryPicker, registerDesktopDirectoryPicker } from './directory-picker.ts'
 import { SettingsRequests } from './settings-requests.tsx'
-import type { DesktopSettingsLocaleKey } from '../../../dsh-plugin-desktop-beta/src/client/desktop-settings-locales.ts'
+import type { DesktopSettingsLocaleKey } from '../../../dsh-plugin-desktop/src/client/desktop-settings-locales.ts'
 import { installRendererRecovery } from './renderer-recovery.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {

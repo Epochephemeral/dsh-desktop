@@ -10,7 +10,7 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { readMarketState } from '../../../dsh-community-market/src/client/api.ts'
 import { Choice, MARKET_OPTIONS, marketBody, marketTitle } from './DesktopSettingsSection.tsx'
-import { en as desktopEn, zh as desktopZh, type DesktopSettingsLocaleKey } from '../../../dsh-plugin-desktop-beta/src/client/desktop-settings-locales.ts'
+import { en as desktopEn, zh as desktopZh, type DesktopSettingsLocaleKey } from '../../../dsh-plugin-desktop/src/client/desktop-settings-locales.ts'
 import { ComputerUseSettings } from './computer-use.tsx'
 import { ComputerUsePluginArtwork } from './computer-use-command-ui.tsx'
 import {

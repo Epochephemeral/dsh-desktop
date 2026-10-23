@@ -701,12 +701,12 @@ try {
   const updateSection = settings.locator('[data-next-updates]')
   await updateSection.getByRole('button', { name: /检查更新|Check for updates/ }).click()
   assert.equal(controlCommands.at(-1).type, 'check-updates')
-  controlState.updates = { phase: 'downloading', version: '2.0.19-next.1', installable: true, received: 50, total: 100 }
+  controlState.updates = { phase: 'downloading', version: '2.0.20-next.1', installable: true, received: 50, total: 100 }
   await updateSection.getByText(/正在下载更新 50%|Downloading update 50%/).waitFor()
   assert.equal(await updateSection.locator('progress').getAttribute('value'), '50')
   await updateSection.scrollIntoViewIfNeeded()
   await page.screenshot({ path: join(screenshots, 'desktop-update-progress.png'), animations: 'disabled' })
-  controlState.updates = { phase: 'ready', version: '2.0.19-next.1', installable: true }
+  controlState.updates = { phase: 'ready', version: '2.0.20-next.1', installable: true }
   await updateSection.getByRole('button', { name: /安装并重启|Install and restart/ }).click()
   assert.equal(controlCommands.at(-1).type, 'install-update')
   controlState.updates = { phase: 'idle', installable: true }

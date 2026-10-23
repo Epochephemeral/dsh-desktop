@@ -413,7 +413,7 @@ it.each(['normal', '--next-safe-mode'])('stages an explicit update before hiding
   vi.doMock('../src/update-installer.ts', () => ({ NextUpdateInstaller: class { stage = stage; launch = launch } }))
   vi.doMock('../src/updates.ts', () => ({ NextUpdates: class {
     constructor(private options: { install(): Promise<void> }) {}
-    snapshot() { return { phase: 'ready', version: '2.0.19-next.1', installable: true } }
+    snapshot() { return { phase: 'ready', version: '2.0.20-next.1', installable: true } }
     start() {}
     dispose = async () => {}
     install = () => this.options.install()
@@ -448,7 +448,7 @@ it.each(['timeout', 'failure'] as const)('still launches a staged update before 
   vi.doMock('../src/update-installer.ts', () => ({ NextUpdateInstaller: class { stage = stage; launch = launch } }))
   vi.doMock('../src/updates.ts', () => ({ NextUpdates: class {
     constructor(private options: { install(): Promise<void> }) {}
-    snapshot() { return { phase: 'ready', version: '2.0.19-next.1', installable: true } }
+    snapshot() { return { phase: 'ready', version: '2.0.20-next.1', installable: true } }
     start() {}
     dispose = async () => {}
     install = () => this.options.install()

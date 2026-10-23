@@ -23,7 +23,7 @@ it('routes the root check gate directly to Next package preflight and honours DS
 
 it('routes the shared Windows package gate to Next without adding unrelated commands', () => {
   spawn.mockReturnValue(succeeded)
-  runNextPackagingCommand('cmd.exe', ['/d', '/s', '/c', 'corepack yarn workspace dsh-plugin-desktop-beta check:win-package'], '/workspace', {}, '/workspace')
+  runNextPackagingCommand('cmd.exe', ['/d', '/s', '/c', 'corepack yarn workspace dsh-plugin-desktop check:win-package'], '/workspace', {}, '/workspace')
   expect(spawn).toHaveBeenCalledOnce()
   expect(spawn.mock.calls[0]?.[1]).toContain('corepack yarn workspace dsh-desktop-next check:win-package')
 })

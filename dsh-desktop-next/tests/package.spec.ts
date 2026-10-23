@@ -14,9 +14,9 @@ it('declares every official optional bundle as a discoverable, version-aligned i
   }
 })
 
-it('archives the application like upstream Desktop while keeping fuses and native inventory aligned with Beta', () => {
-  const next = read('../package.json'); const beta = read('../../dsh-plugin-desktop-beta/package.json')
-  expect(next.version).toBe('2.0.19-next')
+it('archives the application like upstream Desktop while keeping fuses and native inventory aligned with Stable', () => {
+  const next = read('../package.json'); const stable = read('../../dsh-plugin-desktop/package.json')
+  expect(next.version).toBe('2.0.20-next')
   expect(next.build.appId).toBe('ai.deepseek.dsh.desktop.next')
   expect(next.build.asar).toBe(true)
   for (const platform of ['mac', 'win', 'linux']) expect(next.build[platform].asar, platform).toBeUndefined()
@@ -43,10 +43,10 @@ it('archives the application like upstream Desktop while keeping fuses and nativ
   expect(next.build.asarUnpack.every((pattern: string) => pattern.startsWith('**/') || pattern.startsWith('.desktop-build/payload/'))).toBe(true)
   expect(next.build.afterPack).toBe('./scripts/verify-packaged.ts')
   expect(next.build.afterAllArtifactBuild).toBe('./scripts/verify-fuses.ts')
-  expect(next.build.electronFuses).toEqual(beta.build.electronFuses)
-  // Beta's rule already keeps the interpreter payloads and the wheels' .dylibs directories, identical across the two
+  expect(next.build.electronFuses).toEqual(stable.build.electronFuses)
+  // Stable's rule already keeps the interpreter payloads and the wheels' .dylibs directories, identical across the two
   // CPU builds. Next adds its own per-CPU native packages and pnpm's reflink addons from its bundled dist/node_modules.
-  expect(next.build.mac.x64ArchFiles).toBe(beta.build.mac.x64ArchFiles
+  expect(next.build.mac.x64ArchFiles).toBe(stable.build.mac.x64ArchFiles
     .replace('sherpa-onnx-darwin-*/**}', 'sherpa-onnx-darwin-*/**,@trycua/cua-driver-darwin-*/**,@ubjs/node-darwin-*/**,@reflink/reflink-darwin-*/**}'))
   // Both CPU payloads ride beside the archive as extra resources; electron-builder must not re-sign the pre-signed payloads.
   // macOS also carries the manifest copy the updaters shipped in 2.0.14-next through 2.0.17-next read beside the archive.
