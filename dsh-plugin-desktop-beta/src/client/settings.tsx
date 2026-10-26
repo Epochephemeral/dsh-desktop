@@ -68,6 +68,32 @@ function NextBrowserActions({ adapter, state, language }: { adapter: NextSetting
   </>
 }
 
+/**
+ * The data directory in use and how it was chosen: a choice made in the app wins over
+ * `DSH_DESKTOP_NEXT_HOME`, which wins over `~/.dsh`. Changing or backing up never moves data.
+ */
+function NextDataDirectory({ state, language, unavailable, run }: { state: DesktopState; language: string; unavailable: boolean; run(command: DesktopCommand): void }) {
+  const t = (cn: string, en: string): string => language.startsWith('zh') ? cn : en
+  const source = state.dataDirectory?.source
+  const environmentHome = state.dataDirectory?.environmentHome ?? null
+  const label = source === 'desktop' ? t('应用内选择', 'Chosen in app') : source === 'environment' ? 'DSH_DESKTOP_NEXT_HOME' : source === 'default' ? t('默认', 'Default') : undefined
+  const overridden = source === 'desktop' && environmentHome !== null
+  return <div className="dshDesktopSettingsUpdateRow" data-next-data-directory="">
+    <span className="dshDesktopSettingsToggleCopy">
+      <span className="dshDesktopSettingsToggleLabel">{t('数据目录', 'Data directory')}{label && <span className="dshDesktopSettingsBadge" title={t('优先级：应用内选择 > DSH_DESKTOP_NEXT_HOME > 默认目录', 'Precedence: chosen in app > DSH_DESKTOP_NEXT_HOME > default')}>{label}</span>}</span>
+      <code className="dshDesktopSettingsDataPath">{state.home}</code>
+      <p className="dshDesktopSettingsToggleDescription">
+        {overridden && t('应用内选择优先于 DSH_DESKTOP_NEXT_HOME。', 'The directory chosen in the app takes precedence over DSH_DESKTOP_NEXT_HOME. ')}
+        {t('如需重置当前数据目录，请先备份，再到恢复助手中操作。', 'To reset this data directory, back it up first, then use the recovery assistant.')}
+      </p>
+    </span>
+    <span className="dshDesktopSettingsRowActions">
+      <button type="button" className="dshDesktopSettingsButton dshDesktopSettingsButtonSecondary" disabled={unavailable} onClick={() => run({ type: 'change-data-directory' })}>{t('切换', 'Change')}</button>
+      <button type="button" className="dshDesktopSettingsButton dshDesktopSettingsButtonSecondary" disabled={unavailable} onClick={() => run({ type: 'backup-data-directory' })}>{t('备份', 'Back up')}</button>
+    </span>
+  </div>
+}
+
 /** Next-only preferences use the existing Desktop form and switch components. */
 function NextDesktopOptions({ adapter, state, language }: { adapter: NextSettingsAdapter; state: DesktopState; language: string }) {
   const t = (cn: string, en: string): string => language.startsWith('zh') ? cn : en
@@ -99,6 +125,7 @@ function NextDesktopOptions({ adapter, state, language }: { adapter: NextSetting
         {action('restart-onboarding', '设置向导', 'Setup wizard', state.safeMode)}
         {action('open-home', '打开数据目录', 'Open data directory')}{action('open-profile', '打开 Profile 目录', 'Open Profile directory')}{action('open-logs', '打开日志目录', 'Open log directory')}{action('devtools', '开发者工具', 'Developer Tools')}
       </div>
+      <NextDataDirectory state={state} language={language} unavailable={busy || state.busy || state.safeMode} run={command => { void run(() => adapter.command(command)) }} />
       <div className="dshDesktopSettingsMaterialField">
         <span className="dshDesktopSettingsToggleLabel">{t('日志级别', 'Log level')}</span>
         <DesktopSettingsSelect

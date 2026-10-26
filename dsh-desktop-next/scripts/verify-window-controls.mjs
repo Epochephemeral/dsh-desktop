@@ -66,6 +66,7 @@ try {
       networkExposure: 'loopback', port: 0, lanPort: 0, logLevel: 'info', notifications: true,
       turnCompleted: true, turnFailed: true, jobCompleted: false, jobFailed: false },
     phase: 'ready', busy: false, failure: '', safeMode: false, home: '[temporary test home]', platform: 'darwin',
+    dataDirectory: { source: 'desktop', environmentHome: '[temporary variable home]' },
     version: '2.0.14-next', updates: { phase: 'idle', installable: true }, trayAvailable: true, notificationsAvailable: true, browserUrl: null, lan: null,
     recovery: { bundles: [{ bundleId: 'fixture-plugin', packageName: 'fixture-plugin', owner: 'profile', status: 'active', action: 'uninstall' }],
       checkpoints: [{ id: 'fixture-checkpoint', created: new Date().toISOString(), fileCount: 3, totalBytes: 128 }],
@@ -721,6 +722,27 @@ try {
   await page.waitForFunction(() => [...document.querySelectorAll('[data-next-desktop-settings] button')].some(button => /^(设置向导|Setup wizard)$/.test(button.textContent) && !button.disabled))
   await settings.locator('.dshDesktopSettingsGroup').filter({ has: page.getByRole('heading', { name: /^(桌面工具|Desktop tools)$/ }) }).scrollIntoViewIfNeeded()
   await page.screenshot({ path: join(screenshots, 'desktop-setup-wizard-entry.png'), animations: 'disabled' })
+  // The loaded data directory sits between the tool buttons and the log level, with the
+  // recovery assistant's switch and a backup before any reset.
+  const dataDirectory = settings.locator('[data-next-data-directory]')
+  await dataDirectory.locator('code').getByText('[temporary test home]', { exact: true }).waitFor()
+  await dataDirectory.getByText('应用内选择', { exact: true }).waitFor()
+  await dataDirectory.getByText('应用内选择优先于 DSH_DESKTOP_NEXT_HOME。如需重置当前数据目录，请先备份，再到恢复助手中操作。', { exact: true }).waitFor()
+  assert.equal(await dataDirectory.evaluate(row => row.previousElementSibling?.classList.contains('dshDesktopSettingsToolActions')
+    && row.nextElementSibling?.classList.contains('dshDesktopSettingsMaterialField')), true)
+  await dataDirectory.getByRole('button', { name: /^(切换|Change)$/ }).click()
+  assert.equal(controlCommands.at(-1).type, 'change-data-directory')
+  await dataDirectory.getByRole('button', { name: /^(备份|Back up)$/ }).click()
+  assert.equal(controlCommands.at(-1).type, 'backup-data-directory')
+  await dataDirectory.scrollIntoViewIfNeeded()
+  await page.screenshot({ path: join(screenshots, 'desktop-data-directory.png'), animations: 'disabled' })
+  controlState.safeMode = true
+  await page.waitForFunction(() => [...document.querySelectorAll('[data-next-data-directory] button')].every(button => button.disabled))
+  controlState.safeMode = false
+  controlState.dataDirectory = { source: 'environment', environmentHome: '[temporary test home]' }
+  await dataDirectory.getByText('DSH_DESKTOP_NEXT_HOME', { exact: true }).waitFor()
+  assert.equal(await dataDirectory.getByText(/优先于/).count(), 0)
+  await page.waitForFunction(() => [...document.querySelectorAll('[data-next-data-directory] button')].every(button => !button.disabled))
   assert.equal(await settings.getByRole('radio', { name: /^broken/ }).getAttribute('aria-disabled'), 'true')
   assert.equal(await settings.getByRole('radio', { name: /增强模式|扩展模式|Advanced mode|Extended mode/ }).count(), 0)
   assert.equal(await settings.locator('#dsh-desktop-market-title, #dsh-desktop-aa-title').count(), 0)

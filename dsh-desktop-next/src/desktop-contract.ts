@@ -67,6 +67,8 @@ export interface DesktopState {
   /** Initial saved choice for setup; live state belongs to pluginManager. */
   onboardingComputerUse?: boolean
   home: string
+  /** How `home` was chosen: in the app (wins), by `DSH_DESKTOP_NEXT_HOME`, or by default. */
+  dataDirectory?: { source: 'desktop' | 'environment' | 'default'; environmentHome: string | null }
   platform: string
   version: string
   updates?: import('./update-state.ts').NextUpdateState
@@ -105,6 +107,7 @@ export type DesktopCommand =
   | { type: 'preferences'; preferences: DesktopPreferences }
   | { type: 'controls'; page?: 'general' | 'profiles' | 'create-profile' | 'tools' | 'recovery' | 'permissions' }
   | { type: 'restart-app' | 'restart-recovery' | 'restart-onboarding' | 'close-controls' }
+  | { type: 'change-data-directory' | 'backup-data-directory' }
   | { type: 'restart' | 'recover' | 'safe-mode' | 'normal-mode' | 'rollback' | 'repair-global'
     | 'reload' | 'devtools' | 'terminal' | 'open-home' | 'open-profile' | 'open-logs' | 'open-backups'
     | 'diagnostics' | 'open-browser' | 'open-lan' | 'copy-browser' | 'copy-lan' | 'export-ca' | 'quit' }

@@ -2,11 +2,11 @@
 import { installDesktopShortcuts } from './keyboard.ts'
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { readFileSync, rmSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, net, Notification, protocol, safeStorage, session, shell, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, net, Notification, protocol, safeStorage, session, shell, type IpcMainInvokeEvent, type MenuItemConstructorOptions, type OpenDialogOptions } from 'electron'
 import { appRequestHeaders, forwardWebRequest, serveWebDocument } from './web-document.ts'
 import { installAppDownloads } from './app-downloads.ts'
 import { claimDesktopSingleInstance } from './single-instance.ts'
@@ -36,7 +36,8 @@ import { ONBOARDING_ARGUMENT, RECOVERY_ARGUMENT, SAFE_ARGUMENT, relaunchApp, rel
 import { DESKTOP_RUNTIME_FILE, readInstalledPackageVersion, verifyPackagedRuntimeIdentity } from './runtime-tree.ts'
 import { unpackedPath } from './asar-archive-policy.ts'
 import { createNativePermissions, installMediaPermissions } from './electron-permissions.ts'
-import { defaultDataDirectory, readDataDirectory, validateDataDirectory } from './data-directory.ts'
+import { DATA_DIRECTORY_VARIABLE, dataDirectoryChange, dataDirectoryLocationFile, dataDirectoryLocationRoot, readDataDirectory, rememberDataDirectory, sameDirectory, validateDataDirectory } from './data-directory.ts'
+import { assertBackupLocation, backupDirectoryName, copyDataDirectory } from './data-backup.ts'
 import { maskSecrets } from './mask-secrets.ts'
 import { DesktopBrowserGuests } from './browser-guests.ts'
 import { PlatformLoginWindow } from './platform-login-window.ts'
@@ -51,14 +52,14 @@ import { isDesktopRendererStatus, NextRendererRecovery } from './renderer-recove
 applyDesktopPackageAgePolicy(process.env)
 
 const root = dirname(NEXT_PACKAGE)
-const defaultHome = resolve(process.env.DSH_DESKTOP_NEXT_HOME ?? defaultDataDirectory())
-// The location preference stays at its former Next-owned anchor so previously
-// chosen custom directories survive a change to the default home.
-const locationRoot = process.env.DSH_DESKTOP_NEXT_HOME ? defaultHome
-  : app.isPackaged ? join(app.getPath('appData'), 'DSH Desktop Beta', 'home') : join(root, '.desktop-next', 'home')
-const locationFile = join(locationRoot, 'desktop-next-location.json')
-const dataLocation = readDataDirectory(defaultHome, locationRoot)
+// Read once: an in-app relaunch inherits this process's environment, not later user variables.
+const environmentHome = process.env[DATA_DIRECTORY_VARIABLE] || undefined
+// The in-app choice keeps its former Next-owned anchor, whatever the variable says.
+const locationRoot = dataDirectoryLocationRoot(app.isPackaged, () => app.getPath('appData'), root)
+const locationFile = dataDirectoryLocationFile(locationRoot)
+const dataLocation = readDataDirectory(locationRoot, environmentHome)
 const home = dataLocation.home
+let dataSource = dataLocation.source
 const normalElectronData = join(home, 'electron-user-data')
 privateDirectory(normalElectronData)
 app.setName('DSH Desktop Beta')
@@ -105,6 +106,8 @@ let onboardingSurfaceActive = false
 let onboardingComputerUse = false
 let relaunch: string[] | undefined
 let installingUpdate = false
+/** A later launch must not open a window on the data directory the startup prompt may reject. */
+let confirmingDataDirectory = false
 let systemProxy: DesktopSystemProxyProbe = {}
 let hostEnvironmentReady: Promise<void> | undefined
 let windowsLanguage = 'en'
@@ -202,16 +205,19 @@ const updates = new NextUpdates({ version, platform: process.platform, packaged:
 })
 
 function state(): DesktopState {
+  // A broken in-app choice is still a choice that "Restore default" can remove.
+  const usingDefaultDirectory = dataSource !== 'desktop' && !dataLocation.error
   let recovery: DesktopState['recovery']
   try {
     recovery = { bundles: [], checkpoints: runtime.recovery.checkpoints(runtime.selected),
-      profileDirectory: runtime.profiles.directory(runtime.selected), usingDefaultDirectory: home === defaultHome, diagnosticsFile, notice: recoveryNotice }
+      profileDirectory: runtime.profiles.directory(runtime.selected), usingDefaultDirectory, diagnosticsFile, notice: recoveryNotice }
     try { recovery.bundles = runtime.recovery.bundles(runtime.selected) } catch (error) { recovery.error = String(error) }
   } catch (error) {
     recovery = { bundles: [], checkpoints: [], profileDirectory: join(home, 'profiles', runtime.selected),
-      usingDefaultDirectory: home === defaultHome, error: String(error), diagnosticsFile, notice: recoveryNotice }
+      usingDefaultDirectory, error: String(error), diagnosticsFile, notice: recoveryNotice }
   }
-  return { ...runtime.state(), recovery, onboarding, ...(onboarding ? { onboardingComputerUse } : {}), platform: process.platform, version,
+  return { ...runtime.state(), recovery, dataDirectory: { source: dataSource, environmentHome: environmentHome === undefined ? null : resolve(environmentHome) },
+    onboarding, ...(onboarding ? { onboardingComputerUse } : {}), platform: process.platform, version,
     ...(['darwin', 'win32'].includes(process.platform) ? { updates: updates.snapshot() } : {}),
     trayAvailable: native.available, notificationsAvailable: Notification.isSupported() }
 }
@@ -372,7 +378,7 @@ function openControls(page: 'general' | 'profiles' | 'create-profile' | 'tools' 
   void shellWindow.loadURL(url).catch(error => runtime.diagnostics.append(String(error), 'error'))
 }
 function openMain(): void {
-  if (quitting) return
+  if (quitting || confirmingDataDirectory) return
   if (runtime.recoveryMode || runtime.state().phase === 'error') { openControls('recovery'); return }
   if (onboarding) { openControls('onboarding'); return }
   if (mainWindow && !mainWindow.isDestroyed()) { show(mainWindow); return }
@@ -630,6 +636,12 @@ async function performCommand(input: Record<string, unknown>, type: string, sour
     if (type === 'open-profile') { await openPath(runtime.profiles.directory(runtime.selected)); return }
     if (type === 'open-logs') { runtime.diagnostics.flush(); await openPath(dirname(runtime.diagnostics.file)); return }
     if (type === 'open-backups') { privateDirectory(runtime.recovery.directory); await openPath(runtime.recovery.directory); return }
+    if (type === 'change-data-directory' || type === 'backup-data-directory') {
+      if (runtime.safeMode || runtime.recoveryMode) throw new Error(t('安全模式和恢复模式下请使用恢复助手。', 'In Safe Mode or recovery mode, use the recovery assistant.'))
+      if (type === 'change-data-directory') await changeDataDirectory(false)
+      else await backupDataDirectory()
+      return
+    }
     if (type === 'open-browser' || type === 'open-lan') { await shell.openExternal(runtime.browserLink(type === 'open-lan')); return }
     if (type === 'copy-browser' || type === 'copy-lan') { clipboard.writeText(runtime.browserLink(type === 'copy-lan')); return }
     if (type === 'open-browser-url' || type === 'copy-browser-url') {
@@ -727,7 +739,8 @@ async function performCommand(input: Record<string, unknown>, type: string, sour
     await reloadMain()
     if (!runtime.safeMode && mainWindow) shellWindow?.close()
   } catch (error) {
-    if (type === 'recovery-action' || onboarding && (type === 'onboarding-complete' || type === 'onboarding-skip')) runtime.diagnostics.append(String(error), 'error')
+    // A refused directory or a full disk is shown where the user acted; it is not a Host failure.
+    if (['recovery-action', 'change-data-directory', 'backup-data-directory'].includes(type) || onboarding && (type === 'onboarding-complete' || type === 'onboarding-skip')) runtime.diagnostics.append(String(error), 'error')
     else runtime.report(error)
     throw error
   } finally { runtime.busy = false; native.refresh() }
@@ -829,21 +842,8 @@ async function recoveryAction(input: Record<string, unknown>): Promise<void> {
     return
   }
   if (action === 'begin-change-data-directory' || action === 'restore-default-data-directory') {
-    const owner = action === 'begin-change-data-directory' ? raiseDialogOwner() : undefined
-    const choice = action !== 'begin-change-data-directory' ? undefined
-      : await (owner === undefined
-        ? dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
-        : dialog.showOpenDialog(owner, { properties: ['openDirectory', 'createDirectory'] }))
-    if (choice?.canceled) return
-    const target = action === 'restore-default-data-directory' ? defaultHome : choice?.filePaths[0]
-    if (!target || !isAbsolute(target)) return
-    const destination = validateDataDirectory(target, home, defaultHome)
-    if (destination === home) return
-    if (!await confirmed(t('切换数据目录并重启？', 'Change data directory and restart?'),
-      t(`新目录：${destination}。原目录的数据会保留，不会自动迁移。`, `New directory: ${destination}. Existing data remains in its original directory and is not moved.`))) return
-    atomicJson(locationFile, { home: destination })
-    relaunch = relaunchArguments(process.argv.slice(1), false, false)
-    app.quit(); return
+    await changeDataDirectory(action === 'restore-default-data-directory')
+    return
   }
   if (action === 'factory-reset') {
     if (!await confirmed(t('重置当前数据目录并重启？', 'Reset the current data directory and restart?'),
@@ -856,6 +856,112 @@ async function recoveryAction(input: Record<string, unknown>): Promise<void> {
     app.quit(); return
   }
   throw new Error('Unknown recovery action')
+}
+
+function rememberLaunchDirectory(directory: string): void {
+  try { rememberDataDirectory(locationRoot, directory) } catch (error) { runtime.diagnostics.append(`Data directory record: ${String(error)}`, 'warn') }
+}
+
+/**
+ * Ask before a launch sets up another data directory than the last one used. An in-app relaunch
+ * inherits the environment of the process that started it, and a removed choice falls back to the
+ * variable or the default, so either could otherwise start over in a new directory silently.
+ * @returns false when this process ends to reopen the last directory or to quit.
+ */
+async function confirmDataDirectory(): Promise<boolean> {
+  if (safeModeRequested || dataLocation.error) return true
+  const change = dataDirectoryChange(locationRoot, home, environmentHome)
+  if (change === undefined) { rememberLaunchDirectory(home); return true }
+  const { previous, reachable } = change
+  const source = { desktop: t('应用内选择', 'chosen in the app'), environment: DATA_DIRECTORY_VARIABLE, default: t('默认目录', 'default') }[dataSource]
+  // No window exists yet; a relaunched macOS app is not activated on its own.
+  if (process.platform === 'darwin') app.focus({ steal: true })
+  confirmingDataDirectory = true
+  const { response } = await dialog.showMessageBox({ type: 'warning', title: 'DSH Desktop Beta', noLink: true,
+    message: t('数据目录与上次不同', 'The data directory differs from the last launch'),
+    detail: [
+      t(`本次：${home}（${source}）`, `This launch: ${home} (${source})`),
+      t(`上次：${previous}${reachable ? '' : '（当前无法访问）'}`, `Last launch: ${previous}${reachable ? '' : ' (unavailable now)'}`),
+      '',
+      t('继续使用本次目录不会移动或删除上次目录中的数据。', 'Continuing does not move or delete data in the last directory.'),
+      ...reachable ? [] : [t('上次的目录如在移动硬盘或网络位置上，请先连接，再选择“改用上次的目录”。', 'If the last directory is on a removable or network drive, connect it before choosing “Use the last directory”.')],
+      t(`如果刚修改了 ${DATA_DIRECTORY_VARIABLE}：应用内重启会沿用修改前的环境变量，请完全退出后再重新打开。`,
+        `If you just changed ${DATA_DIRECTORY_VARIABLE}: an in-app restart keeps the previous environment, so quit completely and open the app again.`),
+    ].join('\n'),
+    buttons: [t('改用上次的目录', 'Use the last directory'), t('继续使用本次目录', 'Continue with this directory'), t('退出', 'Quit')], defaultId: 0, cancelId: 2 })
+    .finally(() => { confirmingDataDirectory = false })
+  if (response === 1) { rememberLaunchDirectory(home); return true }
+  if (response === 0) {
+    // An in-app choice no longer depends on the inherited environment.
+    atomicJson(locationFile, { home: previous })
+    rememberLaunchDirectory(previous)
+    relaunchApp(app, process.argv.slice(1))
+  }
+  runtime.diagnostics.end(true)
+  app.exit(0)
+  return false
+}
+
+/** Choose another data directory, or forget the in-app choice, for the next launch. No data moves. */
+async function changeDataDirectory(restoreDefault: boolean): Promise<void> {
+  let target = dataLocation.fallback
+  if (!restoreDefault) {
+    const owner = raiseDialogOwner()
+    const options: OpenDialogOptions = { properties: ['openDirectory', 'createDirectory'] }
+    const choice = await (owner === undefined ? dialog.showOpenDialog(options) : dialog.showOpenDialog(owner, options))
+    const selected = choice.canceled ? undefined : choice.filePaths[0]
+    if (!selected || !isAbsolute(selected)) return
+    target = selected
+  }
+  const destination = validateDataDirectory(target, home, dataLocation.fallback)
+  // A broken choice is replaced through a restart, which also leaves recovery.
+  if (sameDirectory(destination, home) && !dataLocation.error) {
+    // The directory stays; restoring the default only forgets how it was chosen.
+    if (restoreDefault && dataSource === 'desktop') { rmSync(locationFile, { force: true }); dataSource = environmentHome ? 'environment' : 'default' }
+    return
+  }
+  if (!await confirmed(t('切换数据目录并重启？', 'Change data directory and restart?'),
+    t(`新目录：${destination}。原目录的数据会保留，不会自动迁移。`, `New directory: ${destination}. Existing data remains in its original directory and is not moved.`))) return
+  // Forgetting the choice lets DSH_DESKTOP_NEXT_HOME or the default apply again.
+  if (restoreDefault) rmSync(locationFile, { force: true })
+  else atomicJson(locationFile, { home: destination })
+  rememberLaunchDirectory(destination)
+  relaunch = relaunchArguments(process.argv.slice(1), false, false)
+  app.quit()
+}
+
+/** Copy the data directory while the Host is stopped; the Host starts again even when copying fails. */
+async function backupDataDirectory(): Promise<void> {
+  const owner = raiseDialogOwner()
+  const options: OpenDialogOptions = { title: t('选择备份保存位置', 'Choose where to save the backup'), properties: ['openDirectory', 'createDirectory'] }
+  const choice = await (owner === undefined ? dialog.showOpenDialog(options) : dialog.showOpenDialog(owner, options))
+  const parent = choice.canceled ? undefined : choice.filePaths[0]
+  if (!parent || !isAbsolute(parent)) return
+  const destination = join(parent, backupDirectoryName(home))
+  try { assertBackupLocation(home, destination) } catch { throw new Error(t('请选择当前数据目录以外的位置。', 'Choose a location outside the current data directory.')) }
+  if (!await confirmed(t('备份当前数据目录？', 'Back up the current data directory?'),
+    t(`备份位置：${destination}\n复制期间工作环境会暂停，正在运行的任务会中断，完成后自动恢复。electron-user-data 中的窗口和浏览器缓存不会备份。`,
+      `Backup location: ${destination}\nThe environment pauses while copying, interrupting running tasks, and resumes afterwards. Window and browser caches in electron-user-data are not included.`))) return
+  rendererRecovery?.stop()
+  await recoveryStopping
+  let failure: Error | undefined
+  // The taskbar or Dock shows the copy is running while the Host, and with it the window content, is down.
+  const progress = (value: number): void => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setProgressBar(value) }
+  progress(2)
+  try {
+    await runtime.restart(async () => {
+      try { await copyDataDirectory(home, destination) } catch (error) { failure = error instanceof Error ? error : new Error(String(error)) }
+    })
+  } finally { progress(-1) }
+  await reloadMain()
+  if (failure) throw new Error(t('备份未完成：', 'Backup failed: ') + failure.message)
+  runtime.diagnostics.append(`Backed up the data directory to ${destination}`)
+  const done = raiseDialogOwner()
+  const notice = { type: 'info' as const, title: 'DSH Desktop Beta', message: t('数据目录已备份', 'Data directory backed up'), detail: destination,
+    buttons: [t('在文件夹中显示', 'Show in folder'), t('完成', 'Done')], defaultId: 1, cancelId: 1, noLink: true }
+  void (done === undefined ? dialog.showMessageBox(notice) : dialog.showMessageBox(done, notice))
+    .then(result => { if (result.response === 0) shell.showItemInFolder(destination) })
+    .catch(error => runtime.diagnostics.append(String(error), 'warn'))
 }
 
 /**
@@ -894,6 +1000,8 @@ async function main(): Promise<void> {
   if (process.platform === 'darwin' && !app.isPackaged) app.dock?.setIcon(join(root, 'build', 'app-icon-mac.png'))
   // Recovery can open without a Host; Chromium's app locale may differ from the OS language.
   windowsLanguage = preferredDesktopLocale([...app.getPreferredSystemLanguages(), app.getLocale()])
+  // Before any Profile is read or set up in a directory this launch may give up.
+  if (!await confirmDataDirectory()) return
   protocol.handle('dsh-app', async request => {
     const url = new URL(request.url)
     if (url.hostname === 'shell') {

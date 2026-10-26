@@ -1,7 +1,7 @@
 /** Native lifecycle contracts exercised without starting Electron or a Host. */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { DEFAULT_PREFERENCES, SAFE_MODE_PREFERENCES } from '../src/desktop-contract.ts'
 import type { NextDesktopRuntime } from '../src/desktop-runtime.ts'
@@ -20,8 +20,14 @@ const fixture = vi.hoisted(() => ({
   phase: 'ready' as 'ready' | 'error',
   needsOnboarding: false, corruptProfile: false, restart: vi.fn(), hostReady: false,
   appPaths: new Map<string, string>(), lockPaths: [] as string[], ownsInstance: true,
+  locationRoot: '',
   runtimeOptions: undefined as ConstructorParameters<typeof NextDesktopRuntime>[0] | undefined,
   onPermission: undefined as ConstructorParameters<typeof NextDesktopRuntime>[0]['onPermission'],
+}))
+// Every launch gets its own anchor for the in-app data-directory choice and the last-launch record.
+vi.mock('../src/data-directory.ts', async importOriginal => ({
+  ...await importOriginal<typeof import('../src/data-directory.ts')>(),
+  dataDirectoryLocationRoot: () => fixture.locationRoot,
 }))
 vi.mock('../src/desktop-runtime.ts', async () => { const { NextProfiles } = await import('../src/profiles.ts'); const { NextRecovery } = await import('../src/recovery.ts'); return { NextDesktopRuntime: class {
   preferences = { ...DEFAULT_PREFERENCES }
@@ -69,7 +75,7 @@ vi.mock('electron', async () => {
   const { EventEmitter } = await import('node:events')
   const app = Object.assign(new EventEmitter(), {
     setName() {}, setPath: (name: string, path: string) => fixture.appPaths.set(name, path), getPath: (name: string) => fixture.appPaths.get(name) ?? process.env.DSH_DESKTOP_NEXT_HOME, getLocale: () => 'en-US', getPreferredSystemLanguages: () => ['zh-Hans-CN', 'en-US'], isReady: () => true, whenReady: async () => {},
-    requestSingleInstanceLock: () => { fixture.lockPaths.push(fixture.appPaths.get('userData')!); return fixture.ownsInstance }, exit: vi.fn(), relaunch: vi.fn(), quit: vi.fn(() => app.emit('before-quit', { preventDefault() {} })),
+    requestSingleInstanceLock: () => { fixture.lockPaths.push(fixture.appPaths.get('userData')!); return fixture.ownsInstance }, exit: vi.fn(), relaunch: vi.fn(), focus: vi.fn(), quit: vi.fn(() => app.emit('before-quit', { preventDefault() {} })),
   })
   class BrowserWindow extends EventEmitter {
     visible = false
@@ -101,6 +107,7 @@ vi.mock('electron', async () => {
     setBackgroundColor() {}
     setBackgroundMaterial() {}
     setTitleBarOverlay = vi.fn()
+    setProgressBar = vi.fn()
     async loadURL(url: string) {
       this.webContents.mainFrame.url = url; this.loadedUrls.push(url)
       this.webContents.emit('did-start-navigation', {}, url, false, true)
@@ -121,7 +128,7 @@ vi.mock('electron', async () => {
   }
   return { app, BrowserWindow, Tray, autoUpdater: Object.assign(new EventEmitter(), { setFeedURL: vi.fn(), checkForUpdates: vi.fn(), quitAndInstall: vi.fn() }), net: { fetch: vi.fn() },
     Notification: class { static isSupported() { return false } },
-    clipboard: {}, dialog: { showMessageBox: vi.fn(async () => ({ response: 0 })) }, shell: {}, safeStorage: {}, nativeTheme: { shouldUseDarkColors: true, on() {} },
+    clipboard: {}, dialog: { showMessageBox: vi.fn(async () => ({ response: 0 })), showOpenDialog: vi.fn(async () => ({ canceled: true, filePaths: [] })) }, shell: { showItemInFolder: vi.fn() }, safeStorage: {}, nativeTheme: { shouldUseDarkColors: true, on() {} },
     nativeImage: { createFromPath: () => ({ isEmpty: () => false, setTemplateImage() {} }) },
     // Templates stay plain arrays for tray assertions; the popup spy is non-enumerable.
     Menu: { buildFromTemplate: (items: any) => Object.defineProperty(items, 'popup', { value: (options: unknown) => fixture.popup(items, options), configurable: true }), setApplicationMenu() {} },
@@ -137,6 +144,7 @@ beforeEach(async () => {
   vi.resetModules()
   fixture.windows.length = 0; fixture.trays.length = 0; fixture.handlers.clear()
   fixture.appPaths.clear(); fixture.lockPaths.length = 0; fixture.ownsInstance = true; fixture.runtimeOptions = undefined
+  fixture.locationRoot = mkdtempSync(join(tmpdir(), 'next-location-root-'))
   fixture.phase = 'ready'
   fixture.needsOnboarding = false; fixture.corruptProfile = false; fixture.restart.mockReset(); fixture.hostReady = false
   fixture.plugin.mockReset(); fixture.pluginDone.mockReset().mockResolvedValue({ exitCode: 0 });
@@ -151,7 +159,10 @@ beforeEach(async () => {
   vi.mocked(app.exit).mockClear()
 })
 
-afterEach(() => { for (const window of fixture.windows) if (!window.destroyed) window.destroy() })
+afterEach(() => {
+  for (const window of fixture.windows) if (!window.destroyed) window.destroy()
+  rmSync(fixture.locationRoot, { recursive: true, force: true })
+})
 
 it('repairs a crashed renderer and fences old document reports while preserving its Host', async () => {
   const home = mkdtempSync(join(tmpdir(), 'next-renderer-repair-'))
@@ -1302,4 +1313,204 @@ it('opens the window immediately without blocking on slow shell environment or s
     vi.unstubAllEnvs()
     rmSync(home, { recursive: true, force: true })
   }
+})
+
+const locationFile = () => join(fixture.locationRoot, 'desktop-next-location.json')
+const recordedHome = () => (JSON.parse(readFileSync(join(fixture.locationRoot, 'desktop-next-last-home.json'), 'utf8')) as { home: string }).home
+
+it('keeps the in-app data directory ahead of DSH_DESKTOP_NEXT_HOME and reports how it was chosen', async () => {
+  const chosen = mkdtempSync(join(tmpdir(), 'next-chosen-home-')), variable = mkdtempSync(join(tmpdir(), 'next-variable-home-'))
+  writeFileSync(locationFile(), JSON.stringify({ home: chosen }))
+  vi.stubEnv('DSH_DESKTOP_NEXT_HOME', variable)
+  try {
+    await import('../src/main.ts')
+    await vi.waitFor(() => expect(fixture.windows).toHaveLength(1))
+    expect(fixture.runtimeOptions?.home).toBe(chosen)
+    const window = fixture.windows[0]
+    const sender = { sender: window.webContents, senderFrame: window.webContents.mainFrame }
+    expect(fixture.handlers.get('dsh-next:state')!(sender)).toMatchObject({
+      dataDirectory: { source: 'desktop', environmentHome: variable }, recovery: { usingDefaultDirectory: false } })
+    expect(recordedHome()).toBe(chosen)
+  } finally { vi.unstubAllEnvs(); rmSync(chosen, { recursive: true, force: true }); rmSync(variable, { recursive: true, force: true }) }
+})
+
+it.each([{ response: 0, keeps: 'the last directory' }, { response: 1, keeps: 'this directory' }, { response: 2, keeps: 'neither' }] as const)(
+  'asks before a relaunch that lost its data directory starts over, then keeps $keeps', async ({ response }) => {
+    const previous = mkdtempSync(join(tmpdir(), 'next-last-home-')), fallback = mkdtempSync(join(tmpdir(), 'next-fallback-home-'))
+    new NextProfiles(previous).ensure('desktop')
+    writeFileSync(join(fixture.locationRoot, 'desktop-next-last-home.json'), JSON.stringify({ home: previous }))
+    // The relaunch inherited no choice of the last directory: the choice file was removed and the
+    // variable set later never reached it. A temporary directory stands in for the default home.
+    vi.stubEnv('DSH_DESKTOP_NEXT_HOME', fallback)
+    const { app, dialog } = await import('electron')
+    vi.mocked(dialog.showMessageBox).mockClear().mockResolvedValueOnce({ response, checkboxChecked: false })
+    try {
+      await import('../src/main.ts')
+      await vi.waitFor(() => expect(dialog.showMessageBox).toHaveBeenCalledOnce())
+      expect(vi.mocked(dialog.showMessageBox).mock.calls[0]![0]).toMatchObject({ message: '数据目录与上次不同',
+        detail: expect.stringContaining(`上次：${previous}\n`), buttons: ['改用上次的目录', '继续使用本次目录', '退出'], cancelId: 2 })
+      if (response === 1) {
+        await vi.waitFor(() => expect(fixture.windows).toHaveLength(1))
+        expect(fixture.runtimeOptions?.home).toBe(fallback)
+        expect(recordedHome()).toBe(fallback)
+        expect(existsSync(locationFile())).toBe(false)
+        expect(app.exit).not.toHaveBeenCalled()
+        return
+      }
+      await vi.waitFor(() => expect(app.exit).toHaveBeenCalledWith(0))
+      expect(fixture.windows).toHaveLength(0)
+      expect(fixture.start).not.toHaveBeenCalled()
+      expect(recordedHome()).toBe(previous)
+      if (response === 0) {
+        // A choice made in the app no longer depends on the environment a relaunch inherits.
+        expect(JSON.parse(readFileSync(locationFile(), 'utf8'))).toEqual({ home: previous })
+        expect(app.relaunch).toHaveBeenCalledOnce()
+      } else {
+        expect(existsSync(locationFile())).toBe(false)
+        expect(app.relaunch).not.toHaveBeenCalled()
+      }
+    } finally { vi.unstubAllEnvs(); rmSync(previous, { recursive: true, force: true }); rmSync(fallback, { recursive: true, force: true }) }
+  })
+
+it('keeps a later launch from opening a window until the data-directory question is answered', async () => {
+  const previous = mkdtempSync(join(tmpdir(), 'next-last-home-')), fallback = mkdtempSync(join(tmpdir(), 'next-fallback-home-'))
+  new NextProfiles(previous).ensure('desktop')
+  writeFileSync(join(fixture.locationRoot, 'desktop-next-last-home.json'), JSON.stringify({ home: previous }))
+  vi.stubEnv('DSH_DESKTOP_NEXT_HOME', fallback)
+  const { app, dialog } = await import('electron')
+  const answer = Promise.withResolvers<{ response: number; checkboxChecked: boolean }>()
+  vi.mocked(dialog.showMessageBox).mockClear().mockReturnValueOnce(answer.promise)
+  try {
+    await import('../src/main.ts')
+    await vi.waitFor(() => expect(dialog.showMessageBox).toHaveBeenCalledOnce())
+    app.emit('second-instance', {}, [])
+    expect(fixture.windows).toHaveLength(0)
+    answer.resolve({ response: 1, checkboxChecked: false })
+    await vi.waitFor(() => expect(fixture.windows).toHaveLength(1))
+  } finally { vi.unstubAllEnvs(); rmSync(previous, { recursive: true, force: true }); rmSync(fallback, { recursive: true, force: true }) }
+})
+
+it('changes the data directory from settings through the recovery checks and records it for the next launch', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'next-settings-home-')), target = mkdtempSync(join(tmpdir(), 'next-settings-target-'))
+  vi.stubEnv('DSH_DESKTOP_NEXT_HOME', home)
+  try {
+    await import('../src/main.ts')
+    await vi.waitFor(() => expect(fixture.windows).toHaveLength(1))
+    const window = fixture.windows[0]
+    const sender = { sender: window.webContents, senderFrame: window.webContents.mainFrame }
+    const command = fixture.handlers.get('dsh-next:command')!
+    const { app, dialog } = await import('electron')
+    expect(fixture.handlers.get('dsh-next:state')!(sender)).toMatchObject({
+      dataDirectory: { source: 'environment', environmentHome: home }, recovery: { usingDefaultDirectory: true } })
+    await command(sender, { type: 'change-data-directory' })
+    expect(existsSync(locationFile())).toBe(false)
+    writeFileSync(join(target, 'unrelated.txt'), 'keep')
+    vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: false, filePaths: [target] })
+    await expect(command(sender, { type: 'change-data-directory' })).rejects.toThrow('empty directory')
+    // A refused directory is reported where the user acted, not as a Host failure.
+    expect(fixture.report).not.toHaveBeenCalled()
+    rmSync(join(target, 'unrelated.txt'))
+    vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: false, filePaths: [target] })
+    await command(sender, { type: 'change-data-directory' })
+    expect(JSON.parse(readFileSync(locationFile(), 'utf8'))).toEqual({ home: target })
+    expect(recordedHome()).toBe(target)
+    await vi.waitFor(() => expect(app.relaunch).toHaveBeenCalledOnce())
+  } finally { vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true }); rmSync(target, { recursive: true, force: true }) }
+})
+
+it.each([false, true])('restores the default from recovery by forgetting the in-app choice (directory changes: %s)', async changes => {
+  const chosen = mkdtempSync(join(tmpdir(), 'next-chosen-home-')), variable = mkdtempSync(join(tmpdir(), 'next-variable-home-'))
+  writeFileSync(locationFile(), JSON.stringify({ home: changes ? chosen : variable }))
+  vi.stubEnv('DSH_DESKTOP_NEXT_HOME', variable)
+  const argv = [...process.argv]
+  process.argv.push('--next-recovery')
+  try {
+    await import('../src/main.ts')
+    await vi.waitFor(() => expect(fixture.windows).toHaveLength(1))
+    const window = fixture.windows[0]
+    const sender = { sender: window.webContents, senderFrame: window.webContents.mainFrame }
+    const command = fixture.handlers.get('dsh-next:command')!
+    const { app } = await import('electron')
+    expect(fixture.runtimeOptions?.home).toBe(changes ? chosen : variable)
+    expect(fixture.handlers.get('dsh-next:state')!(sender)).toMatchObject({ dataDirectory: { source: 'desktop' }, recovery: { usingDefaultDirectory: false } })
+    await command(sender, { type: 'recovery-action', action: 'restore-default-data-directory' })
+    expect(existsSync(locationFile())).toBe(false)
+    if (changes) {
+      expect(recordedHome()).toBe(variable)
+      await vi.waitFor(() => expect(app.relaunch).toHaveBeenCalledOnce())
+    } else {
+      // The chosen directory already is the default one: only the choice goes, without a restart.
+      expect(fixture.handlers.get('dsh-next:state')!(sender)).toMatchObject({ dataDirectory: { source: 'environment' }, recovery: { usingDefaultDirectory: true } })
+      expect(app.quit).not.toHaveBeenCalled()
+    }
+  } finally {
+    process.argv.splice(0, process.argv.length, ...argv); vi.unstubAllEnvs()
+    rmSync(chosen, { recursive: true, force: true }); rmSync(variable, { recursive: true, force: true })
+  }
+})
+
+it('backs up the data directory while the Host is stopped and starts it again, also when copying fails', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'next-backup-home-')), parent = mkdtempSync(join(tmpdir(), 'next-backup-parent-'))
+  vi.stubEnv('DSH_DESKTOP_NEXT_HOME', home)
+  try {
+    await import('../src/main.ts')
+    await vi.waitFor(() => expect(fixture.windows).toHaveLength(1))
+    writeFileSync(join(home, 'settings.yaml'), 'kept: true\n')
+    const window = fixture.windows[0]
+    const sender = { sender: window.webContents, senderFrame: window.webContents.mainFrame }
+    const command = fixture.handlers.get('dsh-next:command')!
+    const { dialog, shell } = await import('electron')
+    vi.mocked(dialog.showMessageBox).mockClear()
+    fixture.stop.mockImplementationOnce(async () => { expect(readdirSync(parent)).toEqual([]) })
+    fixture.restart.mockImplementationOnce(async () => { expect(readdirSync(parent)).toHaveLength(1) })
+    vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: false, filePaths: [parent] })
+    vi.mocked(dialog.showMessageBox).mockResolvedValueOnce({ response: 0, checkboxChecked: false }).mockResolvedValueOnce({ response: 0, checkboxChecked: false })
+    await command(sender, { type: 'backup-data-directory' })
+    const [backup] = readdirSync(parent)
+    expect(backup).toMatch(new RegExp(`^${basename(home)}-backup-\\d{8}-\\d{6}$`))
+    expect(readFileSync(join(parent, backup!, 'settings.yaml'), 'utf8')).toBe('kept: true\n')
+    expect(existsSync(join(parent, backup!, 'electron-user-data'))).toBe(false)
+    expect(fixture.stop).toHaveBeenCalledOnce()
+    expect(fixture.restart).toHaveBeenCalledOnce()
+    expect(window.setProgressBar.mock.calls).toEqual([[2], [-1]])
+    // The confirmation is modal to the main window and names the destination.
+    expect(vi.mocked(dialog.showMessageBox).mock.calls[0]![0]).toBe(window)
+    expect(vi.mocked(dialog.showMessageBox).mock.calls[0]!.at(-1)).toMatchObject({ message: '备份当前数据目录？', detail: expect.stringContaining(join(parent, backup!)) })
+    await vi.waitFor(() => expect(shell.showItemInFolder).toHaveBeenCalledWith(join(parent, backup!)))
+
+    // A backup inside the data directory is refused before the Host stops.
+    vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: false, filePaths: [home] })
+    await expect(command(sender, { type: 'backup-data-directory' })).rejects.toThrow('当前数据目录以外')
+    expect(fixture.stop).toHaveBeenCalledOnce()
+
+    // A copy that cannot complete leaves no partial backup and still starts the Host again.
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date(2026, 9, 26, 17, 30, 5) })
+    mkdirSync(join(parent, `${basename(home)}-backup-20261026-173005`))
+    vi.mocked(dialog.showOpenDialog).mockResolvedValueOnce({ canceled: false, filePaths: [parent] })
+    await expect(command(sender, { type: 'backup-data-directory' })).rejects.toThrow('备份未完成')
+    expect(fixture.restart).toHaveBeenCalledTimes(2)
+    expect(readdirSync(parent).sort()).toEqual([backup, `${basename(home)}-backup-20261026-173005`].sort())
+    expect(fixture.report).not.toHaveBeenCalled()
+  } finally { vi.useRealTimers(); vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true }); rmSync(parent, { recursive: true, force: true }) }
+})
+
+it('refuses data-directory changes and backups from Safe Mode', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'next-safe-data-directory-'))
+  vi.stubEnv('DSH_DESKTOP_NEXT_HOME', home)
+  const argv = [...process.argv]
+  process.argv.push('--next-safe-mode')
+  try {
+    await import('../src/main.ts')
+    await vi.waitFor(() => expect(fixture.windows).toHaveLength(1))
+    const window = fixture.windows[0]
+    const sender = { sender: window.webContents, senderFrame: window.webContents.mainFrame }
+    const command = fixture.handlers.get('dsh-next:command')!
+    const { dialog } = await import('electron')
+    vi.mocked(dialog.showOpenDialog).mockClear()
+    for (const type of ['change-data-directory', 'backup-data-directory'] as const) {
+      await expect(command(sender, { type })).rejects.toThrow('恢复助手')
+    }
+    expect(dialog.showOpenDialog).not.toHaveBeenCalled()
+    expect(existsSync(join(fixture.locationRoot, 'desktop-next-last-home.json'))).toBe(false)
+  } finally { process.argv.splice(0, process.argv.length, ...argv); vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true }) }
 })

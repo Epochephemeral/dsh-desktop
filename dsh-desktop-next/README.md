@@ -121,7 +121,17 @@ Recovery opened at startup follows the operating system's preferred language ord
 
 Backups stay under `home/recovery/`. Diagnostics export a bounded JSON report with versions, state and redacted logs, without reading session or credential files. Logs can still contain local paths and plugin output; inspect the report before sharing. Local desktop logs are bounded to 128 KiB at `home/logs/desktop-next.log`. Desktop preferences live independently of Host settings in `home/desktop-preferences.json`.
 
-Development and packaged builds default to `~/.dsh`, sharing Profiles and data with Stable; Next's selected Profile, Desktop preferences and related settings retain their own file names. The former `DSH NEXT/home` below the system application-data directory retains only the saved data-directory selection, so existing manual choices continue to work. Set `DSH_DESKTOP_NEXT_HOME` to an absolute path to choose a dedicated directory. Next does not select its home from the existing `DSH_HOME`. Factory reset still affects the entire current data directory, including data shared with Stable.
+Development and packaged builds default to `~/.dsh`, sharing Profiles and data with Stable; Next's selected Profile, Desktop preferences and related settings retain their own file names. Next does not select its home from the existing `DSH_HOME`. Factory reset still affects the entire current data directory, including data shared with Stable.
+
+The data directory is chosen in this order, and the Data directory row in Desktop settings shows which source applies:
+
+1. **Chosen in the app:** the directory selected in Desktop settings or the recovery assistant. The choice is stored in `DSH NEXT/home/desktop-next-location.json` below the system application-data directory (`.desktop-next/home/` for development runs). This location is fixed and does not move with any environment variable, so existing manual choices continue to work. **Restore default** in the recovery assistant removes the choice.
+2. **`DSH_DESKTOP_NEXT_HOME`:** an absolute path used when there is no in-app choice. Environment variables are read only when the process starts, and an in-app restart, including **Quit and Restart** from the tray, keeps the old process's environment. After changing this variable, quit Next completely and start it from the Start menu, the Dock or a new terminal.
+3. **Default:** `~/.dsh` when neither of the above applies.
+
+The same location records the directory of the previous launch. When a launch resolves a different directory while the previous one still holds Next data or cannot be reached, Next asks before initializing anything: use the previous directory (saved as the in-app choice), continue with this directory, or quit. Changing the directory or restoring the default from Desktop settings or the recovery assistant does not trigger this question.
+
+**Back up** in Desktop settings pauses the Host, copies the current data directory into a new timestamped folder in the chosen location, then starts the Host again. Window and browser caches in `electron-user-data` are not included, and links inside the directory are retargeted into the backup. The backup is itself a usable data directory that you can switch to. Back up before resetting a data directory, then use the recovery assistant.
 
 Ordinary Web Profiles do not declare `dsh-desktop-next` in `package.json`; Next supplies its capability only in its own Host startup and configuration recomposition. An older Next Profile has that historical bundle entry removed after its manifest is backed up, so Stable or the CLI will not load Next capabilities when opening the same Profile.
 
