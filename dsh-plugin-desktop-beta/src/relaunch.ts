@@ -5,9 +5,11 @@ import { realpathSync } from 'node:fs'
 export const RECOVERY_ARGUMENT = '--next-recovery'
 export const SAFE_ARGUMENT = '--next-safe-mode'
 export const ONBOARDING_ARGUMENT = '--next-onboarding'
+/** Marks the instance an elevated Windows launch restarted with the user's normal token; never carried forward. */
+export const DE_ELEVATED_ARGUMENT = '--next-de-elevated'
 
 export function relaunchArguments(argv: readonly string[], recovery: boolean, safe: boolean, onboarding = false): string[] {
-  return [...argv.filter(value => value !== RECOVERY_ARGUMENT && value !== SAFE_ARGUMENT && value !== ONBOARDING_ARGUMENT),
+  return [...argv.filter(value => value !== RECOVERY_ARGUMENT && value !== SAFE_ARGUMENT && value !== ONBOARDING_ARGUMENT && value !== DE_ELEVATED_ARGUMENT),
     ...recovery ? [RECOVERY_ARGUMENT] : safe ? [SAFE_ARGUMENT] : onboarding ? [ONBOARDING_ARGUMENT] : []]
 }
 

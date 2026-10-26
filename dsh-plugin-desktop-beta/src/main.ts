@@ -33,7 +33,7 @@ import { cleanupDisposableTree } from '../../dsh-plugin-desktop/src/disposable-t
 import { installEditingContextMenu } from '../../dsh-plugin-desktop/src/context-menu.ts'
 import { atomicJson, privateDirectory } from './private-files.ts'
 import { windowMaterial } from './window-material.ts'
-import { ONBOARDING_ARGUMENT, RECOVERY_ARGUMENT, SAFE_ARGUMENT, relaunchApp, relaunchArguments } from './relaunch.ts'
+import { DE_ELEVATED_ARGUMENT, ONBOARDING_ARGUMENT, RECOVERY_ARGUMENT, SAFE_ARGUMENT, relaunchApp, relaunchArguments } from './relaunch.ts'
 import { DESKTOP_RUNTIME_FILE, readInstalledPackageVersion, verifyPackagedRuntimeIdentity } from './runtime-tree.ts'
 import { unpackedPath } from './asar-archive-policy.ts'
 import { createNativePermissions, installMediaPermissions } from './electron-permissions.ts'
@@ -48,6 +48,13 @@ import { NextUpdateInstaller } from './update-installer.ts'
 import { updateLabel } from './update-state.ts'
 import { DESKTOP_SHUTDOWN_TIMEOUT_MS } from '../../dsh-plugin-desktop/src/shutdown.ts'
 import { isDesktopRendererStatus, NextRendererRecovery } from './renderer-recovery.ts'
+import { deElevateAtStartup, windowsElevation } from './windows-elevation.ts'
+import { createSandboxLaunchReporter, gpuLaunchFailure, rendererLaunchFailure } from './sandbox-launch.ts'
+
+// An elevated Windows launch restarts with the user's normal token before Chromium starts any child (#1487).
+const startupElevation = deElevateAtStartup({ platform: process.platform, packaged: app.isPackaged, argv: process.argv, executable: process.execPath })
+if (startupElevation.relaunched) app.exit(0)
+const startupElevationState = startupElevation.relaunched ? {} : startupElevation.state
 
 // Inherit the package policy across the Host and every runtime child process.
 applyDesktopPackageManagerPolicy(process.env)
@@ -67,7 +74,8 @@ app.setName('DSH Desktop Beta')
 // Keep one application owner across normal and safe launches, before switching
 // Chromium storage to the disposable environment.
 app.setPath('userData', normalElectronData)
-const ownsInstance = claimDesktopSingleInstance(app, openMain)
+// app.exit() before the message loop exits at once; never let the replaced launch own the instance regardless.
+const ownsInstance = !startupElevation.relaunched && claimDesktopSingleInstance(app, openMain)
 const safeModeRequested = process.argv.includes(SAFE_ARGUMENT)
 const safeElectronData = join(normalElectronData, 'safe-mode')
 if (ownsInstance) {
@@ -1292,10 +1300,37 @@ if (ownsInstance) {
     runtime.diagnostics.record({ source: 'electron', event: 'uncaught-exception', level: 'error', error, fields: { origin } })
     runtime.diagnostics.end(false)
   })
-  app.on('child-process-gone', (_event, details) => runtime.diagnostics.record({ source: 'electron', event: 'child-process-gone', level: 'error',
-    fields: { type: details.type, reason: details.reason, exitCode: details.exitCode, service: details.serviceName ?? null } }))
+  // Chromium ends the process once no GPU process can launch, leaving nothing on screen; explain it natively first.
+  const reportSandboxLaunchFailure = createSandboxLaunchReporter({
+    elevation: windowsElevation,
+    context: () => ({ startup: startupElevationState, argv: process.argv, executable: process.execPath,
+      language: preferredDesktopLocale([...app.getPreferredSystemLanguages(), app.getLocale()]) }),
+    record: (failure, elevation) => runtime.diagnostics.record({ source: 'electron', event: 'sandbox.launch-failed', level: 'error',
+      fields: { process: failure.process, code: failure.code, elevated: elevation?.elevated ?? null, elevationType: elevation?.type ?? null } }),
+    show: text => { dialog.showMessageBoxSync({ type: 'error', title: text.title, message: text.message, detail: text.detail, buttons: [text.button], defaultId: 0, noLink: true }) },
+    exit: () => { runtime.diagnostics.end(false); app.exit(1) },
+  })
+  app.on('child-process-gone', (_event, details) => {
+    runtime.diagnostics.record({ source: 'electron', event: 'child-process-gone', level: 'error',
+      fields: { type: details.type, reason: details.reason, exitCode: details.exitCode, service: details.serviceName ?? null } })
+    const failure = gpuLaunchFailure(process.platform, details)
+    if (failure && !quitting) reportSandboxLaunchFailure(failure)
+  })
+  app.on('render-process-gone', (_event, contents, details) => {
+    const failure = rendererLaunchFailure(process.platform, details)
+    if (failure && !quitting && [mainWindow, shellWindow].some(window => window !== undefined && !window.isDestroyed() && window.webContents === contents)) {
+      reportSandboxLaunchFailure(failure)
+    }
+  })
   app.once('will-quit', () => runtime.diagnostics.flush())
+  const { elevation, kept, error, win32Code } = startupElevationState
   runtime.diagnostics.begin({ version, platform: process.platform, electron: process.versions.electron ?? '', node: process.version, safeMode: safeModeRequested,
-    ...(dshVersion === undefined ? {} : { dsh: dshVersion }) })
+    ...(dshVersion === undefined ? {} : { dsh: dshVersion }),
+    ...(elevation === undefined ? {} : { elevated: elevation.elevated, elevationType: elevation.type }),
+    ...(process.argv.includes(DE_ELEVATED_ARGUMENT) ? { deElevated: true } : {}) })
+  if (kept !== undefined || error !== undefined) {
+    runtime.diagnostics.record({ source: 'electron', event: elevation === undefined ? 'elevation.unknown' : 'elevation.kept', level: 'warn',
+      ...(error === undefined ? {} : { message: error }), fields: { reason: kept ?? null, win32Code: win32Code ?? null } })
+  }
   void main().catch(error => runtime.report(error))
 }

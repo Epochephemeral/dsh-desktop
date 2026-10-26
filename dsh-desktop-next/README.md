@@ -135,6 +135,12 @@ The same location records the directory of the previous launch. When a launch re
 
 Ordinary Web Profiles do not declare `dsh-desktop-next` in `package.json`; Next supplies its capability only in its own Host startup and configuration recomposition. An older Next Profile has that historical bundle entry removed after its manifest is backed up, so Stable or the CLI will not load Next capabilities when opening the same Profile.
 
+### Administrator launches on Windows
+
+On some Windows systems the Chromium sandbox cannot create the GPU and renderer processes while the app runs as administrator; left alone, such a launch ends silently after about a second. A packaged Next that starts with the elevated half of a split token (UAC on), for example through **Run as administrator**, an administrator terminal or an elevated installer, therefore restarts itself once with the desktop shell's normal token before starting any child process, the technique of Chromium's `base::win::RunDeElevated`. The restarted process keeps the arguments and the working directory and gets a fresh environment from the user profile. Add `--next-keep-elevated` to keep an intentional administrator launch. With UAC off or the built-in Administrator account there is no normal token to return to, so those launches stay elevated.
+
+When a sandboxed GPU or renderer process still cannot launch on Windows, Next shows a native dialog and quits instead of disappearing. The dialog names the likely cause for the current elevation state and how to stop running as administrator, gives the Chromium sandbox error code, and describes the temporary `--no-sandbox` workaround, which turns off the sandbox for every page, including sites opened in the sidebar browser. The desktop log records the failure as `sandbox.launch-failed`.
+
 ## Architecture and provenance
 
 ```text

@@ -135,6 +135,12 @@ corepack yarn workspace dsh-desktop-next verify:host --computer-use
 
 普通 Web Profile 无需在 `package.json` 中声明 `dsh-desktop-next`；Next 仅在自身 Host 启动和配置重组时提供该能力。已有的旧 Next Profile 会在备份清单后移除这个历史 bundle 条目，避免 Stable 或 CLI 打开同一 Profile 时载入 Next 能力。
 
+### Windows 下以管理员身份启动
+
+在部分 Windows 环境中，应用以管理员身份运行时，Chromium 沙箱无法创建 GPU 进程和渲染进程；不加处理的话，这样的启动约一秒后会无声退出。因此，打包版 Next 如果以拆分令牌中提权的一半启动（UAC 开启时），例如通过“以管理员身份运行”、管理员终端或提权的安装程序启动，会在启动任何子进程之前用桌面 shell 的普通令牌重新启动一次自身，做法与 Chromium 的 `base::win::RunDeElevated` 相同。重新启动的进程沿用原有参数和工作目录，环境变量按用户配置重新生成。如需保留有意的管理员启动，请加上 `--next-keep-elevated`。关闭 UAC 或使用内置 Administrator 账户时没有可以回到的普通令牌，这类启动会保持提权。
+
+如果 Windows 上沙箱化的 GPU 进程或渲染进程仍然无法启动，Next 会显示原生对话框后退出，而不是直接消失。对话框按当前提权状态说明可能原因和取消“以管理员身份运行”的方法，给出 Chromium 沙箱错误码，并说明临时绕过参数 `--no-sandbox`：它会关闭所有页面的沙箱，包括侧边栏浏览器打开的网站。桌面日志以 `sandbox.launch-failed` 记录这次失败。
+
 ## 架构与来源
 
 ```text

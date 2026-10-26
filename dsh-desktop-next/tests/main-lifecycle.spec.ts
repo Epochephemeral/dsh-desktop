@@ -23,6 +23,14 @@ const fixture = vi.hoisted(() => ({
   locationRoot: '',
   runtimeOptions: undefined as ConstructorParameters<typeof NextDesktopRuntime>[0] | undefined,
   onPermission: undefined as ConstructorParameters<typeof NextDesktopRuntime>[0]['onPermission'],
+  startupElevation: { relaunched: false, state: {} } as ReturnType<typeof import('../src/windows-elevation.ts').deElevateAtStartup>,
+  elevation: undefined as import('../src/windows-elevation.ts').WindowsElevation | undefined,
+}))
+// Token queries and the de-elevated restart are Win32 calls; the lifecycle only sees their results.
+vi.mock('../src/windows-elevation.ts', async importOriginal => ({
+  ...await importOriginal<typeof import('../src/windows-elevation.ts')>(),
+  deElevateAtStartup: () => fixture.startupElevation,
+  windowsElevation: () => { if (!fixture.elevation) throw new Error('No token fixture'); return fixture.elevation },
 }))
 // Every launch gets its own anchor for the in-app data-directory choice and the last-launch record.
 vi.mock('../src/data-directory.ts', async importOriginal => ({
@@ -128,7 +136,7 @@ vi.mock('electron', async () => {
   }
   return { app, BrowserWindow, Tray, autoUpdater: Object.assign(new EventEmitter(), { setFeedURL: vi.fn(), checkForUpdates: vi.fn(), quitAndInstall: vi.fn() }), net: { fetch: vi.fn() },
     Notification: class { static isSupported() { return false } },
-    clipboard: {}, dialog: { showMessageBox: vi.fn(async () => ({ response: 0 })), showOpenDialog: vi.fn(async () => ({ canceled: true, filePaths: [] })) }, shell: { showItemInFolder: vi.fn() }, safeStorage: {}, nativeTheme: { shouldUseDarkColors: true, on() {} },
+    clipboard: {}, dialog: { showMessageBox: vi.fn(async () => ({ response: 0 })), showMessageBoxSync: vi.fn(() => 0), showOpenDialog: vi.fn(async () => ({ canceled: true, filePaths: [] })) }, shell: { showItemInFolder: vi.fn() }, safeStorage: {}, nativeTheme: { shouldUseDarkColors: true, on() {} },
     nativeImage: { createFromPath: () => ({ isEmpty: () => false, setTemplateImage() {} }) },
     // Templates stay plain arrays for tray assertions; the popup spy is non-enumerable.
     Menu: { buildFromTemplate: (items: any) => Object.defineProperty(items, 'popup', { value: (options: unknown) => fixture.popup(items, options), configurable: true }), setApplicationMenu() {} },
@@ -151,12 +159,14 @@ beforeEach(async () => {
   fixture.load.mockReset(); fixture.report.mockReset(); fixture.diagnosticAppend.mockReset();
   fixture.terminalTarget.mockReset(); fixture.openTerminal.mockClear(); fixture.popup.mockClear();
   fixture.stop.mockReset().mockResolvedValue(undefined); fixture.start.mockClear(); fixture.close.mockReset().mockResolvedValue(undefined)
-  const { app, autoUpdater } = await import('electron')
+  fixture.startupElevation = { relaunched: false, state: {} }; fixture.elevation = undefined
+  const { app, autoUpdater, dialog } = await import('electron')
   autoUpdater.removeAllListeners()
   app.removeAllListeners()
   vi.mocked(app.relaunch).mockClear()
   vi.mocked(app.quit).mockClear()
   vi.mocked(app.exit).mockClear()
+  vi.mocked(dialog.showMessageBoxSync).mockClear()
 })
 
 afterEach(() => {
@@ -406,6 +416,90 @@ it('pops the official editing context menu with Windows labels in the applicatio
       { role: 'undo', enabled: false, label: 'Undo', accelerator: '' },
       { role: 'paste', enabled: true, label: 'Paste', accelerator: '' },
     ]), { window: controls })
+  } finally {
+    Object.defineProperty(process, 'platform', platform)
+    vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true })
+  }
+})
+
+it('exits before claiming the instance when an elevated Windows launch restarted de-elevated', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'next-de-elevated-'))
+  vi.stubEnv('DSH_DESKTOP_NEXT_HOME', home)
+  fixture.startupElevation = { relaunched: true }
+  try {
+    await import('../src/main.ts')
+    const { app } = await import('electron')
+    expect(app.exit).toHaveBeenCalledWith(0)
+    expect(fixture.lockPaths).toEqual([])
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(fixture.windows).toHaveLength(0)
+    expect(fixture.start).not.toHaveBeenCalled()
+  } finally {
+    vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true })
+  }
+})
+
+it('explains the first Windows GPU launch failure in a native dialog, records it and quits', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'next-sandbox-gpu-'))
+  vi.stubEnv('DSH_DESKTOP_NEXT_HOME', home)
+  fixture.startupElevation = { relaunched: false, state: { elevation: { elevated: true, type: 'full' }, kept: 'shell-other-user' } }
+  fixture.elevation = { elevated: true, type: 'full' }
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+  try {
+    await import('../src/main.ts')
+    await vi.waitFor(() => expect(fixture.windows).toHaveLength(1))
+    const { app, dialog } = await import('electron')
+    expect(fixture.diagnosticAppend).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'electron', event: 'elevation.kept', level: 'warn', fields: { reason: 'shell-other-user', win32Code: null },
+    }))
+    const gpu = { type: 'GPU', reason: 'launch-failed', exitCode: 18 }
+    // Other platforms and other children keep Chromium's own handling.
+    app.emit('child-process-gone', {}, gpu)
+    Object.defineProperty(process, 'platform', { ...platform, value: 'win32' })
+    app.emit('child-process-gone', {}, { type: 'Utility', reason: 'launch-failed', exitCode: 18, serviceName: 'audio.mojom.AudioService' })
+    app.emit('child-process-gone', {}, { ...gpu, reason: 'crashed', exitCode: -2147483645 })
+    expect(dialog.showMessageBoxSync).not.toHaveBeenCalled()
+    app.emit('child-process-gone', {}, gpu)
+    app.emit('child-process-gone', {}, gpu)
+    expect(dialog.showMessageBoxSync).toHaveBeenCalledOnce()
+    const options = vi.mocked(dialog.showMessageBoxSync).mock.calls[0]![0]
+    expect(options).toMatchObject({ type: 'error', title: 'DSH NEXT 无法启动', buttons: ['退出'], noLink: true })
+    expect(options.message).toContain('GPU 进程')
+    expect(options.detail).toContain('以普通权限自动重新启动没有成功')
+    expect(options.detail).toContain('「以管理员身份运行此程序」')
+    expect(options.detail).toContain('错误码：18')
+    expect(options.detail).toContain('--no-sandbox')
+    expect(fixture.diagnosticAppend).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'electron', event: 'sandbox.launch-failed', level: 'error', fields: { process: 'gpu', code: 18, elevated: true, elevationType: 'full' },
+    }))
+    expect(app.exit).toHaveBeenCalledOnce()
+    expect(app.exit).toHaveBeenCalledWith(1)
+  } finally {
+    Object.defineProperty(process, 'platform', platform)
+    vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true })
+  }
+})
+
+it('explains a Windows renderer launch failure only for the Desktop windows', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'next-sandbox-renderer-'))
+  vi.stubEnv('DSH_DESKTOP_NEXT_HOME', home)
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform')!
+  try {
+    await import('../src/main.ts')
+    await vi.waitFor(() => expect(fixture.windows).toHaveLength(1))
+    const { app, dialog } = await import('electron')
+    Object.defineProperty(process, 'platform', { ...platform, value: 'win32' })
+    const failed = { reason: 'launch-failed', exitCode: 18 }
+    app.emit('render-process-gone', {}, { id: 999 }, failed)
+    app.emit('render-process-gone', {}, fixture.windows[0].webContents, { reason: 'crashed', exitCode: 1 })
+    expect(dialog.showMessageBoxSync).not.toHaveBeenCalled()
+    app.emit('render-process-gone', {}, fixture.windows[0].webContents, failed)
+    expect(dialog.showMessageBoxSync).toHaveBeenCalledOnce()
+    const options = vi.mocked(dialog.showMessageBoxSync).mock.calls[0]![0]
+    expect(options.message).toContain('渲染进程')
+    // Without a token fixture the elevation is unknown, and the dialog says so.
+    expect(options.detail).toContain('无法确认')
+    expect(app.exit).toHaveBeenCalledWith(1)
   } finally {
     Object.defineProperty(process, 'platform', platform)
     vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true })
