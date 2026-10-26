@@ -10911,6 +10911,7 @@ __metadata:
     "@deepseek-ai/dsh-workspace": "npm:0.2.1-rc.3"
     "@deepseek-ai/schemastery": "npm:^3.18.5"
     "@fontsource-variable/inter": "npm:^5.3.0"
+    "@img/sharp-wasm32": "npm:0.35.5"
     "@shikijs/langs": "npm:^4.3.1"
     "@tailwindcss/vite": "npm:^4"
     "@types/node": "npm:^22.20.0"
@@ -10963,6 +10964,9 @@ __metadata:
     vitest: "npm:4.1.8"
     yaml: "npm:^2.9.0"
     zustand: "npm:~4.4.7"
+  dependenciesMeta:
+    "@img/sharp-wasm32":
+      optional: true
   languageName: unknown
   linkType: soft
 
@@ -11151,6 +11155,7 @@ __metadata:
     "@deepseek-ai/dsh-workspace": "npm:0.2.1-rc.3"
     "@deepseek-ai/schemastery": "npm:^3.18.5"
     "@fontsource-variable/inter": "npm:^5.3.0"
+    "@img/sharp-wasm32": "npm:0.35.5"
     "@shikijs/langs": "npm:^4.3.1"
     "@tailwindcss/vite": "npm:^4"
     "@types/node": "npm:^22.20.0"
@@ -11203,6 +11208,9 @@ __metadata:
     vitest: "npm:4.1.8"
     yaml: "npm:^2.9.0"
     zustand: "npm:~4.4.7"
+  dependenciesMeta:
+    "@img/sharp-wasm32":
+      optional: true
   languageName: unknown
   linkType: soft
 

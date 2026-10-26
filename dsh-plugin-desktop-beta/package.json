@@ -235,6 +235,9 @@
     "selfsigned": "5.5.0",
     "yaml": "^2.9.0"
   },
+  "optionalDependencies": {
+    "@img/sharp-wasm32": "0.35.5"
+  },
   "devDependencies": {
     "@base-ui/react": "^1.7.0",
     "@deepseek-ai/dsh-client-ui-sidebar-browser": "0.2.1-rc.3",
