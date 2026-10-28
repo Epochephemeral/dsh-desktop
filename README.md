@@ -4,6 +4,8 @@
 
 <h1 align="center">DSH Desktop</h1>
 
+> **个人定制分支**：本仓库是 [Epochephemeral/dsh-desktop](https://github.com/Epochephemeral/dsh-desktop)，fork 自 [anywhere-labs/dsh-desktop](https://github.com/anywhere-labs/dsh-desktop)。服务端定制统一在本仓库维护，不依赖另一个个人 DSH fork。轻量阅读接口的源码补丁、包补丁和重建工具在本仓库统一保存；框架官方版本与子模块 pin 保持不变。目前尚未接入默认打包锁文件，已有安装继续使用经过验证的 profile 覆盖包。维护说明见 [Session reader](runtime-customizations/session-reader/README.md)。下方下载链接属于上游发行版，不能据此认为它包含本 fork 的定制。
+
 <p align="center">
   <strong>基于 DeepSeek Harness 构建的 Windows 和 macOS 开源桌面客户端。</strong>
 </p>
