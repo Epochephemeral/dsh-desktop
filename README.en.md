@@ -4,6 +4,8 @@
 
 <h1 align="center">DSH Desktop</h1>
 
+> **Personal customization fork:** [Epochephemeral/dsh-desktop](https://github.com/Epochephemeral/dsh-desktop), forked from [anywhere-labs/dsh-desktop](https://github.com/anywhere-labs/dsh-desktop). Server customizations are owned here, without a separate personal DSH fork. Reader source/package patches and rebuild tools are maintained here while preserving the official framework version and submodule pin. Default packaging lockfile integration is pending; existing installations continue using the verified profile overlay. See [Session reader maintenance](runtime-customizations/session-reader/README.md). Download links below belong to upstream releases and do not imply inclusion of this fork's changes.
+
 <p align="center">
   <strong>An open-source desktop client for Windows and macOS, built on DeepSeek Harness.</strong>
 </p>
